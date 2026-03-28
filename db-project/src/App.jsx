@@ -152,8 +152,10 @@ function App() {
   const [rowModesModel, setRowModesModel] = useState({});
   const [isTableLoading, setIsTableLoading] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authToken, setAuthToken] = useState('');
   const [currentUserEmail, setCurrentUserEmail] = useState('');
   const [currentRole, setCurrentRole] = useState('');
+  const canModifyRows = ['prof', 'professor', 'admin'].includes((currentRole || '').toLowerCase());
 
 
   const selectedTable = useMemo(() => {
@@ -171,6 +173,10 @@ function App() {
   }, [location.pathname]);
 
   const gridColumns = useMemo(() => {
+    if (!canModifyRows) {
+      return baseColumns.filter((column) => column.field);
+    }
+
     const actionsColumn = {
       field: 'actions',
       type: 'actions',
@@ -194,9 +200,21 @@ function App() {
     };
 
     return [...baseColumns, actionsColumn].filter((column) => column.field);
-  }, [baseColumns, rowModesModel]);
+  }, [baseColumns, canModifyRows, rowModesModel]);
 
   const getRowIdentity = (row) => row?.[rowIdField] ?? row?.id;
+
+  const authFetch = (url, options = {}) => {
+    const headers = { ...(options.headers || {}) };
+    if (authToken) {
+      headers.Authorization = `Bearer ${authToken}`;
+    }
+
+    return fetch(url, {
+      ...options,
+      headers,
+    });
+  };
 
   const handleAddClick = () => {
     const newId = Date.now();
@@ -250,7 +268,7 @@ function App() {
     }
 
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `http://localhost:8000/api/table/${encodeURIComponent(selectedTable)}/${encodeURIComponent(id)}`,
         { method: 'DELETE' },
       );
@@ -287,7 +305,7 @@ function App() {
     const rowIdentity = getRowIdentity(newRow);
 
     if (newRow.isNew) {
-      const response = await fetch(
+      const response = await authFetch(
         `http://localhost:8000/api/table/${encodeURIComponent(selectedTable)}`,
         {
           method: 'POST',
@@ -310,7 +328,7 @@ function App() {
       return updatedRow;
     }
 
-    const response = await fetch(
+    const response = await authFetch(
       `http://localhost:8000/api/table/${encodeURIComponent(selectedTable)}/${encodeURIComponent(rowIdentity)}`,
       {
         method: 'PUT',
@@ -354,15 +372,27 @@ function App() {
     }
 
     const data = await response.json();
-    const resolvedEmail = data.email ?? email;
+    const token = data.access_token;
+    if (!token) {
+      throw new Error('Login response does not include access token');
+    }
 
+    const resolvedEmail = data.email ?? email;
+    const resolvedRole = data.role ?? '';
+
+    setAuthToken(token);
     setIsAuthenticated(true);
     setCurrentUserEmail(resolvedEmail);
-    setCurrentRole(data.role ?? '');
+    setCurrentRole(resolvedRole);
+
+    localStorage.setItem('db-project-auth-token', token);
+    localStorage.setItem('db-project-user-email', resolvedEmail);
+    localStorage.setItem('db-project-role', resolvedRole);
   };
 
   const handleLogout = () => {
     setIsAuthenticated(false);
+    setAuthToken('');
     setCurrentUserEmail('');
     setCurrentRole('');
     setNavigation([]);
@@ -370,18 +400,31 @@ function App() {
     setBaseColumns([]);
     setRowModesModel({});
     localStorage.removeItem('db-project-auth');
+    localStorage.removeItem('db-project-auth-token');
     localStorage.removeItem('db-project-user-email');
     localStorage.removeItem('db-project-role');
     navigate('/');
   };
 
-
   useEffect(() => {
-    if (!isAuthenticated) {
+    const storedToken = localStorage.getItem('db-project-auth-token');
+    if (!storedToken) {
       return;
     }
 
-    fetch('http://localhost:8000/api/tables')
+    setAuthToken(storedToken);
+    setCurrentUserEmail(localStorage.getItem('db-project-user-email') || '');
+    setCurrentRole(localStorage.getItem('db-project-role') || '');
+    setIsAuthenticated(true);
+  }, []);
+
+
+  useEffect(() => {
+    if (!isAuthenticated || !authToken) {
+      return;
+    }
+
+    authFetch('http://localhost:8000/api/tables')
       .then((response) => response.json())
       .then((data) => {
         const nav = data["tables"].map((table) => ({
@@ -393,7 +436,7 @@ function App() {
       .catch((error) => {
         console.error('Error fetching data:', error);
       });
-  }, [isAuthenticated]);
+  }, [isAuthenticated, authToken]);
 
   useEffect(() => {
     if (!isAuthenticated || selectedTable || navigation.length === 0) {
@@ -405,7 +448,7 @@ function App() {
 
     // Load rows when a navigation item (route) is clicked
   useEffect(() => {
-    if (!isAuthenticated || !selectedTable) return;
+    if (!isAuthenticated || !authToken || !selectedTable) return;
 
     // clear previous table data immediately
     setIsTableLoading(true);
@@ -414,7 +457,7 @@ function App() {
     setRowIdField('id');
     setRowModesModel({});
 
-    fetch(`http://localhost:8000/api/table/${encodeURIComponent(selectedTable)}`)
+    authFetch(`http://localhost:8000/api/table/${encodeURIComponent(selectedTable)}`)
       .then((res) => res.json())
       .then((data) => {
         const incomingRows = data.rows || [];
@@ -435,7 +478,7 @@ function App() {
             headerName: formatTableName(key),
             flex: 1,
             width: 80,
-            editable: key !== detectedRowIdField,
+            editable: canModifyRows && key !== detectedRowIdField,
           }));
 
         setGridRows(rows);
@@ -444,7 +487,7 @@ function App() {
       })
       .catch((err) => console.error('Error fetching table data:', err))
       .finally(() => setIsTableLoading(false));
-  }, [isAuthenticated, selectedTable]);
+  }, [isAuthenticated, authToken, selectedTable, canModifyRows]);
 
   if (!isAuthenticated) {
     return <SignInSide onSignIn={handleSignIn} />;
@@ -461,12 +504,12 @@ function App() {
     signOut: handleLogout,
   };
 
-  const items = currentRole === 'student' ? ['Classmates', 'Lessons', 'Exams'] : ['Departments', 'Students', 'Courses', 'Enrollments', 'Professors', 'Classrooms'];
+  const items = currentRole === 'student' ? ['Classmates', 'v_courses', 'v_assignments', 'v_schedule'] : ['Departments', 'Students', 'Courses', 'Enrollments', 'Professors', 'Classrooms'];
 
   return (
 
     <ReactRouterAppProvider
-      navigation={items.map((table) => ({ segment: table, title: formatTableName(table)  }))}
+      navigation={navigation}
       session={session}
       authentication={authentication}
       branding={{
@@ -573,9 +616,11 @@ function App() {
       >
         <PageContainer>
           <Box sx={{ alignItems: 'center', display: 'flex', justifyContent: 'space-between', gap: 2, mb: 2 }}>
-            <Button variant="contained" color="primary" sx={{ color: '#ffffff', boxShadow: '0 10px 24px rgba(25, 118, 210, 0.22)', ...(customTheme.applyStyles('dark', { color: 'hsl(220, 35%, 8%)', backgroundColor: 'hsl(220, 30%, 96%)', boxShadow: '0 10px 28px rgba(3, 8, 20, 0.4)', '&:hover': { backgroundColor: 'hsl(220, 24%, 90%)' } })) }} startIcon={<AddIcon sx={{ color: 'inherit' }} />} onClick={handleAddClick} disabled={!selectedTable}>
-              Add row
-            </Button>
+            {canModifyRows ? (
+              <Button variant="contained" color="primary" sx={{ color: '#ffffff', boxShadow: '0 10px 24px rgba(25, 118, 210, 0.22)', ...(customTheme.applyStyles('dark', { color: 'hsl(220, 35%, 8%)', backgroundColor: 'hsl(220, 30%, 96%)', boxShadow: '0 10px 28px rgba(3, 8, 20, 0.4)', '&:hover': { backgroundColor: 'hsl(220, 24%, 90%)' } })) }} startIcon={<AddIcon sx={{ color: 'inherit' }} />} onClick={handleAddClick} disabled={!selectedTable}>
+                Add row
+              </Button>
+            ) : null}
           </Box>
           {selectedTable ? (
             <DataGrid
