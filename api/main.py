@@ -170,11 +170,13 @@ def list_tables(token_data: dict[str, Any] = Depends(get_current_user_token), db
         else:
             cur.execute(
                 """
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = 'dbo'
-                AND table_type = 'BASE TABLE'
-                ORDER BY table_name;
+                SELECT t.name AS table_name
+                FROM sys.tables t
+                JOIN sys.schemas s ON s.schema_id = t.schema_id
+                WHERE t.is_ms_shipped = 0
+                AND s.name = 'dbo'
+                AND t.name NOT IN ('users', 'roles', 'AuditLog', 'v_user_login', 'sysdiagrams')
+                ORDER BY t.name;
                 """
             )
 
@@ -198,21 +200,15 @@ def get_table_rows(
         raise HTTPException(status_code=403, detail="Students are not allowed to access this table")
 
     with db.cursor() as cur:
-        table_columns = get_table_columns(table_name, db)
         safe_table_name = quote_identifier(table_name)
 
-        where_column = None
-        if role == "student" and "student_id" in table_columns:
-            where_column = "student_id"
-        if role == "student" and "group_id" in table_columns:
-            where_column = "group_id"
-        elif role == "professor" and "professor_id" in table_columns:
-            where_column = "professor_id"
 
-        print(f"Debug: role={role}, table={table_name}, where_column={where_column}, profile_id={profile_id}")
+        print(f"Debug: role={role}, table={table_name}, profile_id={profile_id}")
 
-
-        cur.execute("EXEC ? ?", (table_name,profile_id,))
+        if role == "student" :
+            cur.execute(f"EXEC dbo.{safe_table_name} ?", (profile_id,))
+        else:
+            cur.execute(f"SELECT * FROM dbo.{safe_table_name}")
 
         raw_rows = cur.fetchall()
 
