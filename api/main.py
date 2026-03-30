@@ -24,6 +24,15 @@ STUDENT_ALLOWED = {
     "Schedule",
 }
 
+PROFESSOR_ALLOWED = {
+    'sp_Lessons',
+    'sp_Students',
+    'sp_Courses',
+    'sp_Assignments',
+    'sp_Participations',
+    'sp_Exams'
+}
+
 JWT_SECRET_KEY = "PeaceWasNeverAnOption"
 JWT_ALGORITHM = "HS512"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
@@ -152,33 +161,21 @@ def login(payload: LoginRequest, db=Depends(get_db)):
 @app.get("/api/tables")
 def list_tables(token_data: dict[str, Any] = Depends(get_current_user_token), db=Depends(get_db)):
     role = token_data.get("role")
+    allowed_routines = sorted(STUDENT_ALLOWED if role == "student" else PROFESSOR_ALLOWED)
+    placeholders = ", ".join("?" for _ in allowed_routines)
 
     with db.cursor() as cur:
-        if role == "student":
-            placeholders = ", ".join("?" for _ in STUDENT_ALLOWED)
-            cur.execute(
-                f"""
-                SELECT ROUTINE_NAME AS table_name
-                FROM INFORMATION_SCHEMA.ROUTINES
-                WHERE ROUTINE_SCHEMA = 'dbo'
-                AND ROUTINE_TYPE = 'PROCEDURE'
-                AND ROUTINE_NAME IN ({placeholders})
-                ORDER BY ROUTINE_NAME;
-                """,
-                tuple(sorted(STUDENT_ALLOWED)),
-            )
-        else:
-            cur.execute(
-                """
-                SELECT t.name AS table_name
-                FROM sys.tables t
-                JOIN sys.schemas s ON s.schema_id = t.schema_id
-                WHERE t.is_ms_shipped = 0
-                AND s.name = 'dbo'
-                AND t.name NOT IN ('users', 'roles', 'AuditLog', 'v_user_login', 'sysdiagrams')
-                ORDER BY t.name;
-                """
-            )
+        cur.execute(
+            f"""
+            SELECT ROUTINE_NAME AS table_name
+            FROM INFORMATION_SCHEMA.ROUTINES
+            WHERE ROUTINE_SCHEMA = 'dbo'
+            AND ROUTINE_TYPE = 'PROCEDURE'
+            AND ROUTINE_NAME IN ({placeholders})
+            ORDER BY ROUTINE_NAME;
+            """,
+            tuple(allowed_routines),
+        )
 
         tables = [row[0] for row in cur.fetchall()]
 
@@ -202,15 +199,17 @@ def get_table_rows(
     with db.cursor() as cur:
         safe_table_name = quote_identifier(table_name)
 
+        cur.execute(f"EXEC dbo.{safe_table_name} ?", (profile_id,))
 
-        print(f"Debug: role={role}, table={table_name}, profile_id={profile_id}")
 
-        if role == "student" :
-            cur.execute(f"EXEC dbo.{safe_table_name} ?", (profile_id,))
-        else:
-            cur.execute(f"SELECT * FROM dbo.{safe_table_name}")
+        # if role == "student" :
+        #     cur.execute(f"EXEC dbo.{safe_table_name} ?", (profile_id,))
+        # else:
+        #     cur.execute(f"SELECT * FROM dbo.{safe_table_name}")
 
         raw_rows = cur.fetchall()
+
+        print(f"Debug: Retrieved {len(raw_rows)} rows from {table_name}")
 
         columns = [column[0] for column in cur.description]
         rows = [dict(zip(columns, row)) for row in raw_rows]

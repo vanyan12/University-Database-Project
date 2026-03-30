@@ -3,23 +3,19 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import './App.css'
 import {
   DataGrid,
-  GridActionsCellItem,
-  GridRowEditStopReasons,
   GridRowModes,
 } from '@mui/x-data-grid';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
+import IconButton from '@mui/material/IconButton';
 import Typography from '@mui/material/Typography';
 import { DashboardLayout, ThemeSwitcher } from '@toolpad/core/DashboardLayout';
 import { ReactRouterAppProvider } from '@toolpad/core/react-router';
 import { PageContainer } from '@toolpad/core/PageContainer';
 import { Account } from '@toolpad/core/Account';
 import AddIcon from '@mui/icons-material/Add';
-import DeleteIcon from '@mui/icons-material/DeleteOutlined';
 import EditIcon from '@mui/icons-material/Edit';
-import SaveIcon from '@mui/icons-material/Save';
-import CancelIcon from '@mui/icons-material/Close';
 import { createTheme } from '@mui/material/styles';
 import SchoolIcon from '@mui/icons-material/School';
 import SignInSide from './sign-in-side/SignInSide.jsx';
@@ -103,8 +99,34 @@ const customTheme = createTheme({
 });
 
 const formatTableName = (name) => {
-  const withSpaces = name.replaceAll('_', ' ');
+  const withSpaces = name.replaceAll('_', ' ').replace('sp', '').trim();
   return withSpaces.charAt(0).toUpperCase() + withSpaces.slice(1);
+};
+
+const normalizeDateTimeDisplay = (value) => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmedValue = value.trim();
+  const isoMatch = trimmedValue.match(
+    /^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/,
+  );
+
+  if (!isoMatch) {
+    return value;
+  }
+
+  const [, year, month, day, hours, minutes, seconds] = isoMatch;
+  return `${year}-${month}-${day} ${hours}:${minutes}${seconds ? `:${seconds}` : ''}`;
+};
+
+const formatGridDateTimeValue = (paramsOrValue) => {
+  if (paramsOrValue != null && typeof paramsOrValue === 'object' && 'value' in paramsOrValue) {
+    return normalizeDateTimeDisplay(paramsOrValue.value);
+  }
+
+  return normalizeDateTimeDisplay(paramsOrValue);
 };
 
 function GridLoadingOverlay() {
@@ -172,35 +194,31 @@ function App() {
     }
   }, [location.pathname]);
 
+  const canShowTableActions = useMemo(() => {
+    const normalizedTableName = (selectedTable || '')
+      .replace(/^sp_/i, '')
+      .replace(/^my_/i, '')
+      .toLowerCase();
+
+    return normalizedTableName === 'participation' || normalizedTableName === 'participations';
+  }, [selectedTable]);
+
+  const isAssignmentsTable = useMemo(() => {
+    const normalizedTableName = (selectedTable || '')
+      .replace(/^sp_/i, '')
+      .replace(/^my_/i, '')
+      .toLowerCase();
+
+    return normalizedTableName === 'assignment' || normalizedTableName === 'assignments';
+  }, [selectedTable]);
+
+  const canAddRowsForSelectedTable = canModifyRows && isAssignmentsTable;
+
+  const canEditRowsForSelectedTable = canModifyRows && canShowTableActions;
+
   const gridColumns = useMemo(() => {
-    if (!canModifyRows) {
-      return baseColumns.filter((column) => column.field);
-    }
-
-    const actionsColumn = {
-      field: 'actions',
-      type: 'actions',
-      headerName: 'Actions',
-      width: 120,
-      getActions: ({ id }) => {
-        const isInEditMode = rowModesModel[id]?.mode === GridRowModes.Edit;
-
-        if (isInEditMode) {
-          return [
-            <GridActionsCellItem icon={<SaveIcon />} label="Save" onClick={handleSaveClick(id)} />,
-            <GridActionsCellItem icon={<CancelIcon />} label="Cancel" onClick={handleCancelClick(id)} />,
-          ];
-        }
-
-        return [
-          <GridActionsCellItem icon={<EditIcon />} label="Edit" onClick={handleEditClick(id)} />,
-          <GridActionsCellItem icon={<DeleteIcon />} label="Delete" onClick={handleDeleteClick(id)} />,
-        ];
-      },
-    };
-
-    return [...baseColumns, actionsColumn].filter((column) => column.field);
-  }, [baseColumns, canModifyRows, rowModesModel]);
+    return baseColumns.filter((column) => column.field);
+  }, [baseColumns]);
 
   const getRowIdentity = (row) => row?.[rowIdField] ?? row?.id;
 
@@ -220,7 +238,7 @@ function App() {
     const newId = Date.now();
 
     const editableFields = gridColumns
-      .filter((column) => column?.field && column.field !== rowIdField && column.field !== 'id' && column.field !== 'actions')
+      .filter((column) => column?.field && column.field !== rowIdField && column.field !== 'id')
       .map((column) => column.field);
 
     const newRow = { id: newId, isNew: true };
@@ -239,66 +257,14 @@ function App() {
     }));
   };
 
-  const handleRowEditStop = (params, event) => {
-    if (params.reason === GridRowEditStopReasons.rowFocusOut) {
-      event.defaultMuiPrevented = true;
-    }
-  };
-
-  const handleEditClick = (id) => () => {
-    setRowModesModel((previousModel) => ({
-      ...previousModel,
-      [id]: { mode: GridRowModes.Edit },
-    }));
-  };
-
-  const handleSaveClick = (id) => () => {
-    setRowModesModel((previousModel) => ({
-      ...previousModel,
-      [id]: { mode: GridRowModes.View },
-    }));
-  };
-
-  const handleDeleteClick = (id) => async () => {
-    const rowToDelete = gridRows.find((row) => getRowIdentity(row) === id);
-
-    if (rowToDelete?.isNew) {
-      setGridRows((previousRows) => previousRows.filter((row) => getRowIdentity(row) !== id));
-      return;
+  const processRowUpdate = async (newRow, oldRow) => {
+    if (isAssignmentsTable && !newRow.isNew) {
+      return oldRow;
     }
 
-    try {
-      const response = await authFetch(
-        `http://localhost:8000/api/table/${encodeURIComponent(selectedTable)}/${encodeURIComponent(id)}`,
-        { method: 'DELETE' },
-      );
-
-      if (!response.ok) {
-        throw new Error(`Delete failed with status ${response.status}`);
-      }
-
-      setGridRows((previousRows) => previousRows.filter((row) => getRowIdentity(row) !== id));
-    } catch (error) {
-      console.error('Error deleting row:', error);
-    }
-  };
-
-  const handleCancelClick = (id) => () => {
-    setRowModesModel((previousModel) => ({
-      ...previousModel,
-      [id]: { mode: GridRowModes.View, ignoreModifications: true },
-    }));
-
-    const editedRow = gridRows.find((row) => getRowIdentity(row) === id);
-    if (editedRow?.isNew) {
-      setGridRows((previousRows) => previousRows.filter((row) => getRowIdentity(row) !== id));
-    }
-  };
-
-  const processRowUpdate = async (newRow) => {
     const payload = Object.fromEntries(
       Object.entries(newRow).filter(
-        ([field]) => field !== rowIdField && field !== 'id' && field !== 'isNew' && field !== 'actions',
+        ([field]) => field !== rowIdField && field !== 'id' && field !== 'isNew',
       ),
     );
 
@@ -462,13 +428,24 @@ function App() {
       .then((data) => {
         const incomingRows = data.rows || [];
         const sample = incomingRows[0] || {};
-        const detectedRowIdField = Object.prototype.hasOwnProperty.call(sample, 'id')
-          ? 'id'
-          : Object.keys(sample).find((key) => key.endsWith('_id')) || 'id';
+        const candidateIdFields = [
+          'id',
+          ...Object.keys(sample).filter((key) => key.endsWith('_id')),
+        ];
+
+        const detectedRowIdField = candidateIdFields.find((field) => {
+          const values = incomingRows.map((row) => row?.[field]);
+          const hasNullOrUndefined = values.some((value) => value == null);
+          if (hasNullOrUndefined) {
+            return false;
+          }
+
+          return new Set(values.map((value) => String(value))).size === values.length;
+        }) || '__rowKey';
 
         const rows = incomingRows.map((row, index) => (
-          detectedRowIdField === 'id' && row.id == null
-            ? { id: index + 1, ...row }
+          detectedRowIdField === '__rowKey'
+            ? { ...row, __rowKey: `${selectedTable}-${index}` }
             : row
         ));
 
@@ -478,7 +455,54 @@ function App() {
             headerName: formatTableName(key),
             flex: 1,
             width: 80,
-            editable: canModifyRows && key !== detectedRowIdField,
+            editable: (canAddRowsForSelectedTable || canEditRowsForSelectedTable) && key !== detectedRowIdField,
+            valueFormatter: (paramsOrValue) => formatGridDateTimeValue(paramsOrValue),
+            renderCell: canEditRowsForSelectedTable && String(key).replaceAll('_', '').toLowerCase() === 'statusname'
+              ? (params) => (
+                <Box
+                  sx={{
+                    alignItems: 'center',
+                    display: 'flex',
+                    minWidth: 0,
+                    position: 'relative',
+                    pr: 4,
+                    width: '100%',
+                    '&:hover .status-edit-trigger': {
+                      opacity: 1,
+                    },
+                  }}
+                >
+                  <Box
+                    component="span"
+                    sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}
+                  >
+                    {params.value ?? ''}
+                  </Box>
+                  <IconButton
+                    className="status-edit-trigger"
+                    size="small"
+                    aria-label="Edit status"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setRowModesModel((previousModel) => ({
+                        ...previousModel,
+                        [params.id]: { mode: GridRowModes.Edit, fieldToFocus: params.field },
+                      }));
+                    }}
+                    sx={{
+                      opacity: 0,
+                      position: 'absolute',
+                      right: 4,
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      transition: 'opacity 120ms ease-in-out',
+                    }}
+                  >
+                    <EditIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+              )
+              : undefined,
           }));
 
         setGridRows(rows);
@@ -487,7 +511,7 @@ function App() {
       })
       .catch((err) => console.error('Error fetching table data:', err))
       .finally(() => setIsTableLoading(false));
-  }, [isAuthenticated, authToken, selectedTable, canModifyRows]);
+  }, [isAuthenticated, authToken, selectedTable, canAddRowsForSelectedTable, canEditRowsForSelectedTable]);
 
   if (!isAuthenticated) {
     return <SignInSide onSignIn={handleSignIn} />;
@@ -616,7 +640,7 @@ function App() {
       >
         <PageContainer>
           <Box sx={{ alignItems: 'center', display: 'flex', justifyContent: 'space-between', gap: 2, mb: 2 }}>
-            {canModifyRows ? (
+            {canAddRowsForSelectedTable ? (
               <Button variant="contained" color="primary" sx={{ color: '#ffffff', boxShadow: '0 10px 24px rgba(25, 118, 210, 0.22)', ...(customTheme.applyStyles('dark', { color: 'hsl(220, 35%, 8%)', backgroundColor: 'hsl(220, 30%, 96%)', boxShadow: '0 10px 28px rgba(3, 8, 20, 0.4)', '&:hover': { backgroundColor: 'hsl(220, 24%, 90%)' } })) }} startIcon={<AddIcon sx={{ color: 'inherit' }} />} onClick={handleAddClick} disabled={!selectedTable}>
                 Add row
               </Button>
@@ -627,8 +651,27 @@ function App() {
               key={selectedTable}
               rows={gridRows}
               columns={gridColumns}
-              getRowId={(row) => row?.[rowIdField] ?? row?.id}
+              getRowId={(row) => row?.[rowIdField] ?? row?.__rowKey ?? row?.id}
               loading={isTableLoading}
+              isCellEditable={(params) => {
+                if (!canModifyRows) {
+                  return false;
+                }
+
+                if (isAssignmentsTable) {
+                  return Boolean(params.row?.isNew)
+                    && params.field !== rowIdField
+                    && params.field !== 'id'
+                    && params.field !== 'actions';
+                }
+
+                if (canShowTableActions) {
+                  const normalizedField = String(params.field).replaceAll('_', '').toLowerCase();
+                  return normalizedField === 'statusname';
+                }
+
+                return false;
+              }}
               sx={{
                 border: '1px solid',
                 borderColor: 'divider',
@@ -670,7 +713,6 @@ function App() {
               editMode="row"
               rowModesModel={rowModesModel}
               onRowModesModelChange={handleRowModesModelChange}
-              onRowEditStop={handleRowEditStop}
               processRowUpdate={processRowUpdate}
               onProcessRowUpdateError={handleProcessRowUpdateError}
               slots={{
