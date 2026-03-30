@@ -120,17 +120,20 @@ def get_table_columns(table_name: str, db) -> set[str]:
         return {row[0] for row in cur.fetchall()}
 
 
-def get_primary_key_column(table_name: str, db) -> str:
+def get_primary_key_columns(table_name: str, db) -> list[str]:
     with db.cursor() as cur:
         cur.execute(
             """
-            SELECT c.COLUMN_NAME
+            SELECT ku.COLUMN_NAME
             FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
-            JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE c
-              ON tc.CONSTRAINT_NAME = c.CONSTRAINT_NAME
+            JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE ku
+              ON tc.CONSTRAINT_NAME = ku.CONSTRAINT_NAME
+             AND tc.TABLE_SCHEMA = ku.TABLE_SCHEMA
+             AND tc.TABLE_NAME = ku.TABLE_NAME
             WHERE tc.TABLE_SCHEMA = 'dbo'
               AND tc.TABLE_NAME = ?
               AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+            ORDER BY ku.ORDINAL_POSITION
             """,
             (table_name,),
         )
@@ -138,7 +141,12 @@ def get_primary_key_column(table_name: str, db) -> str:
 
     if not rows:
         raise HTTPException(status_code=400, detail="Table has no primary key")
-    if len(rows) > 1:
-        raise HTTPException(status_code=400, detail="Composite primary keys are not supported")
 
-    return rows[0][0]
+    return [row[0] for row in rows]
+
+
+def get_primary_key_column(table_name: str, db) -> str:
+    pk_columns = get_primary_key_columns(table_name, db)
+    if len(pk_columns) > 1:
+        raise HTTPException(status_code=400, detail="Composite primary keys are not supported for this operation")
+    return pk_columns[0]

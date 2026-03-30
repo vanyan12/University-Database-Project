@@ -9,6 +9,8 @@ import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
 import IconButton from '@mui/material/IconButton';
+import MenuItem from '@mui/material/MenuItem';
+import Select from '@mui/material/Select';
 import Typography from '@mui/material/Typography';
 import { DashboardLayout, ThemeSwitcher } from '@toolpad/core/DashboardLayout';
 import { ReactRouterAppProvider } from '@toolpad/core/react-router';
@@ -19,6 +21,8 @@ import EditIcon from '@mui/icons-material/Edit';
 import { createTheme } from '@mui/material/styles';
 import SchoolIcon from '@mui/icons-material/School';
 import SignInSide from './sign-in-side/SignInSide.jsx';
+
+const DEFAULT_STATUS_OPTIONS = ['Present', 'Absent', 'Excused', 'Late'];
 
 
 const customTheme = createTheme({
@@ -171,12 +175,14 @@ function App() {
   const [gridRows, setGridRows] = useState([]);
   const [baseColumns, setBaseColumns] = useState([]);
   const [rowIdField, setRowIdField] = useState('id');
+  const [dbRowIdField, setDbRowIdField] = useState('id');
   const [rowModesModel, setRowModesModel] = useState({});
   const [isTableLoading, setIsTableLoading] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authToken, setAuthToken] = useState('');
   const [currentUserEmail, setCurrentUserEmail] = useState('');
   const [currentRole, setCurrentRole] = useState('');
+  const [statusOptions, setStatusOptions] = useState(DEFAULT_STATUS_OPTIONS);
   const canModifyRows = ['prof', 'professor', 'admin'].includes((currentRole || '').toLowerCase());
 
 
@@ -193,6 +199,21 @@ function App() {
       return firstSegment;
     }
   }, [location.pathname]);
+
+  const writeTableName = useMemo(() => {
+    const tableName = selectedTable || '';
+    const normalizedTableName = tableName.toLowerCase();
+
+    if (normalizedTableName === 'sp_participation' || normalizedTableName === 'sp_participations') {
+      return 'Participation';
+    }
+
+    if (normalizedTableName.startsWith('sp_')) {
+      return tableName.slice(3);
+    }
+
+    return tableName;
+  }, [selectedTable]);
 
   const canShowTableActions = useMemo(() => {
     const normalizedTableName = (selectedTable || '')
@@ -212,6 +233,10 @@ function App() {
     return normalizedTableName === 'assignment' || normalizedTableName === 'assignments';
   }, [selectedTable]);
 
+  const isParticipationTable = useMemo(() => {
+    return (writeTableName || '').toLowerCase() === 'participation';
+  }, [writeTableName]);
+
   const canAddRowsForSelectedTable = canModifyRows && isAssignmentsTable;
 
   const canEditRowsForSelectedTable = canModifyRows && canShowTableActions;
@@ -220,7 +245,8 @@ function App() {
     return baseColumns.filter((column) => column.field);
   }, [baseColumns]);
 
-  const getRowIdentity = (row) => row?.[rowIdField] ?? row?.id;
+  const getRowIdentity = (row) => row?.[rowIdField] ?? row?.__rowKey ?? row?.id;
+  const getDbRowIdentity = (row) => row?.[dbRowIdField] ?? row?.id;
 
   const authFetch = (url, options = {}) => {
     const headers = { ...(options.headers || {}) };
@@ -234,6 +260,33 @@ function App() {
     });
   };
 
+  useEffect(() => {
+    if (!isAuthenticated || !authToken) {
+      return;
+    }
+
+    authFetch('http://localhost:8000/api/status-options')
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Status options request failed with ${response.status}`);
+        }
+
+        return response.json();
+      })
+      .then((data) => {
+        const options = (data.options || [])
+          .map((option) => option?.status_name)
+          .filter((option) => typeof option === 'string' && option.trim().length > 0);
+
+        if (options.length > 0) {
+          setStatusOptions(options);
+        }
+      })
+      .catch((error) => {
+        console.warn('Unable to load status options, using defaults:', error);
+      });
+  }, [isAuthenticated, authToken]);
+
   const handleAddClick = () => {
     const newId = Date.now();
 
@@ -241,7 +294,7 @@ function App() {
       .filter((column) => column?.field && column.field !== rowIdField && column.field !== 'id')
       .map((column) => column.field);
 
-    const newRow = { id: newId, isNew: true };
+    const newRow = { id: newId, isNew: true, __writeTableName: writeTableName };
     editableFields.forEach((field) => {
       newRow[field] = '';
     });
@@ -262,17 +315,41 @@ function App() {
       return oldRow;
     }
 
-    const payload = Object.fromEntries(
-      Object.entries(newRow).filter(
-        ([field]) => field !== rowIdField && field !== 'id' && field !== 'isNew',
-      ),
+    const targetWriteTableName = newRow?.__writeTableName ?? oldRow?.__writeTableName ?? writeTableName;
+
+    let filteredFields = Object.entries(newRow).filter(
+      ([field]) => field !== rowIdField && field !== 'id' && field !== 'isNew' && !field.startsWith('__'),
     );
 
+    // For Participation table, only allow status_name updates
+    const normalizedTableName = String(targetWriteTableName)
+          .replace(/^sp_/i, '')
+          .trim()
+          .toLowerCase();
+    if (normalizedTableName.includes('participation')) {
+      filteredFields = filteredFields.filter(([field]) => field.toLowerCase() === 'status_name');
+    }
+
+    const payload = Object.fromEntries(filteredFields);
+
+    if (normalizedTableName.includes('participation')) {
+      const lessonId = newRow?.lesson_id ?? oldRow?.lesson_id;
+      const studentId = newRow?.student_id ?? oldRow?.student_id;
+
+      if (lessonId == null || studentId == null) {
+        throw new Error('Participation update requires lesson_id and student_id');
+      }
+
+      payload.lesson_id = lessonId;
+      payload.student_id = studentId;
+    }
+
     const rowIdentity = getRowIdentity(newRow);
+    const dbRowIdentity = getDbRowIdentity(newRow);
 
     if (newRow.isNew) {
       const response = await authFetch(
-        `http://localhost:8000/api/table/${encodeURIComponent(selectedTable)}`,
+        `http://localhost:8000/api/table/${encodeURIComponent(targetWriteTableName)}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -294,21 +371,58 @@ function App() {
       return updatedRow;
     }
 
-    const response = await authFetch(
-      `http://localhost:8000/api/table/${encodeURIComponent(selectedTable)}/${encodeURIComponent(rowIdentity)}`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      },
-    );
+    let response;
+
+    if (normalizedTableName.includes('participation')) {
+      const lessonId = newRow?.lesson_id ?? oldRow?.lesson_id;
+      const studentId = newRow?.student_id ?? oldRow?.student_id;
+
+      if (lessonId == null || studentId == null) {
+        throw new Error('Participation update requires lesson_id and student_id');
+      }
+
+      response = await authFetch(
+        `http://localhost:8000/api/table/Participation/${encodeURIComponent(studentId)}/${encodeURIComponent(lessonId)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        },
+      );
+    } else {
+      if (dbRowIdentity == null || dbRowIdentity === '') {
+        throw new Error('Missing row identifier for update request');
+      }
+
+      response = await authFetch(
+        `http://localhost:8000/api/table/${encodeURIComponent(targetWriteTableName)}/${encodeURIComponent(dbRowIdentity)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        },
+      );
+    }
 
     if (!response.ok) {
       throw new Error(`Update failed with status ${response.status}`);
     }
 
     const data = await response.json();
-    const updatedRow = { ...data.row, isNew: false };
+    const preservedRowIdentity = oldRow?.[rowIdField] ?? newRow?.[rowIdField];
+    const updatedRow = {
+      ...oldRow,
+      ...newRow,
+      ...(data.row || {}),
+      isNew: false,
+      __writeTableName: targetWriteTableName,
+    };
+
+    if (rowIdField === '__rowKey') {
+      updatedRow.__rowKey = oldRow?.__rowKey ?? newRow?.__rowKey;
+    } else if (preservedRowIdentity != null) {
+      updatedRow[rowIdField] = preservedRowIdentity;
+    }
 
     setGridRows((previousRows) =>
       previousRows.map((row) => (getRowIdentity(row) === rowIdentity ? updatedRow : row)),
@@ -421,6 +535,7 @@ function App() {
     setGridRows([]);
     setBaseColumns([]);
     setRowIdField('id');
+    setDbRowIdField('id');
     setRowModesModel({});
 
     authFetch(`http://localhost:8000/api/table/${encodeURIComponent(selectedTable)}`)
@@ -428,10 +543,22 @@ function App() {
       .then((data) => {
         const incomingRows = data.rows || [];
         const sample = incomingRows[0] || {};
-        const candidateIdFields = [
-          'id',
-          ...Object.keys(sample).filter((key) => key.endsWith('_id')),
-        ];
+        const idLikeFields = Object.keys(sample).filter((key) => /(^id$|_id$)/i.test(key));
+        const candidateIdFields = Array.from(new Set(['id', ...idLikeFields]));
+
+        const detectedDbRowIdField = candidateIdFields.find((field) => {
+          const values = incomingRows
+            .map((row) => row?.[field])
+            .filter((value) => value != null);
+
+          if (values.length === 0) {
+            return false;
+          }
+
+          return new Set(values.map((value) => String(value))).size === values.length;
+        }) || candidateIdFields.find((field) =>
+          incomingRows.some((row) => row?.[field] != null),
+        ) || 'id';
 
         const detectedRowIdField = candidateIdFields.find((field) => {
           const values = incomingRows.map((row) => row?.[field]);
@@ -443,22 +570,81 @@ function App() {
           return new Set(values.map((value) => String(value))).size === values.length;
         }) || '__rowKey';
 
-        const rows = incomingRows.map((row, index) => (
-          detectedRowIdField === '__rowKey'
-            ? { ...row, __rowKey: `${selectedTable}-${index}` }
-            : row
-        ));
+        const rows = incomingRows.map((row, index) => {
+          const rowWithWriteTarget = { ...row, __writeTableName: writeTableName };
+
+          if (detectedRowIdField === '__rowKey') {
+            return { ...rowWithWriteTarget, __rowKey: `${selectedTable}-${index}` };
+          }
+
+          return rowWithWriteTarget;
+        });
+
+        const hiddenParticipationFields = new Set(['lesson_id', 'student_id']);
 
         const columns = Object.keys(sample)
-          .map((key) => ({
-            field: key,
-            headerName: formatTableName(key),
-            flex: 1,
-            width: 80,
-            editable: (canAddRowsForSelectedTable || canEditRowsForSelectedTable) && key !== detectedRowIdField,
-            valueFormatter: (paramsOrValue) => formatGridDateTimeValue(paramsOrValue),
-            renderCell: canEditRowsForSelectedTable && String(key).replaceAll('_', '').toLowerCase() === 'statusname'
-              ? (params) => (
+          .filter((key) => !(isParticipationTable && hiddenParticipationFields.has(String(key).toLowerCase())))
+          .map((key) => {
+            const normalizedFieldKey = String(key).replaceAll('_', '').toLowerCase();
+            const isStatusNameField = normalizedFieldKey === 'statusname';
+
+            return {
+              field: key,
+              headerName: formatTableName(key),
+              flex: 1,
+              width: 80,
+              editable: (canAddRowsForSelectedTable || canEditRowsForSelectedTable)
+                && key !== detectedRowIdField
+                && key !== detectedDbRowIdField,
+              type: isParticipationTable && isStatusNameField ? 'singleSelect' : undefined,
+              valueOptions: isParticipationTable && isStatusNameField ? statusOptions : undefined,
+              renderEditCell: isParticipationTable && isStatusNameField
+                ? (params) => (
+                  <Select
+                    size="small"
+                    fullWidth
+                    value={params.value ?? ''}
+                    onChange={(event) => {
+                      params.api.setEditCellValue(
+                        {
+                          id: params.id,
+                          field: params.field,
+                          value: event.target.value,
+                        },
+                        event,
+                      );
+                    }}
+                    MenuProps={{
+                      PaperProps: {
+                        sx: {
+                          borderRadius: 2,
+                          maxHeight: 260,
+                        },
+                      },
+                      MenuListProps: {
+                        dense: true,
+                      },
+                    }}
+                    sx={{
+                      backgroundColor: 'background.paper',
+                      borderRadius: 1,
+                      minWidth: 140,
+                      '& .MuiSelect-select': {
+                        py: 0.75,
+                      },
+                    }}
+                  >
+                    {statusOptions.map((option) => (
+                      <MenuItem key={option} value={option}>
+                        {option}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                )
+                : undefined,
+              valueFormatter: (paramsOrValue) => formatGridDateTimeValue(paramsOrValue),
+              renderCell: canEditRowsForSelectedTable && isStatusNameField
+                ? (params) => (
                 <Box
                   sx={{
                     alignItems: 'center',
@@ -502,16 +688,18 @@ function App() {
                   </IconButton>
                 </Box>
               )
-              : undefined,
-          }));
+                : undefined,
+            };
+          });
 
         setGridRows(rows);
         setBaseColumns(columns);
         setRowIdField(detectedRowIdField);
+        setDbRowIdField(detectedDbRowIdField);
       })
       .catch((err) => console.error('Error fetching table data:', err))
       .finally(() => setIsTableLoading(false));
-  }, [isAuthenticated, authToken, selectedTable, canAddRowsForSelectedTable, canEditRowsForSelectedTable]);
+  }, [isAuthenticated, authToken, selectedTable, canAddRowsForSelectedTable, canEditRowsForSelectedTable, isParticipationTable, statusOptions, writeTableName]);
 
   if (!isAuthenticated) {
     return <SignInSide onSignIn={handleSignIn} />;

@@ -29,7 +29,7 @@ PROFESSOR_ALLOWED = {
     'sp_Students',
     'sp_Courses',
     'sp_Assignments',
-    'sp_Participations',
+    'sp_Participation',
     'sp_Exams'
 }
 
@@ -44,7 +44,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite frontend
+    allow_origins=["http://localhost:5173"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -105,6 +105,84 @@ def get_current_user_token(
 def ensure_can_modify(token_data: dict[str, Any]) -> None:
     if token_data.get("role") == "student":
         raise HTTPException(status_code=403, detail="Students are not allowed to modify data")
+
+
+def get_status_lookup_table_name(db) -> str:
+    with db.cursor() as cur:
+        cur.execute(
+            """
+            SELECT TOP 1 c1.TABLE_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS c1
+            JOIN INFORMATION_SCHEMA.COLUMNS c2
+              ON c1.TABLE_SCHEMA = c2.TABLE_SCHEMA
+             AND c1.TABLE_NAME = c2.TABLE_NAME
+            WHERE c1.TABLE_SCHEMA = 'dbo'
+              AND c1.COLUMN_NAME = 'status_id'
+              AND c2.COLUMN_NAME = 'status_name'
+            ORDER BY c1.TABLE_NAME
+            """
+        )
+        table_row = cur.fetchone()
+
+    if table_row is None:
+        raise HTTPException(status_code=500, detail="Unable to resolve status lookup table")
+
+    return str(table_row[0])
+
+
+def resolve_status_id(status_value: Any, db) -> int:
+    if status_value is None:
+        raise HTTPException(status_code=400, detail="Status value is required")
+
+    # Allow clients to send status_id directly.
+    if isinstance(status_value, int):
+        return status_value
+
+    status_text = str(status_value).strip()
+    if not status_text:
+        raise HTTPException(status_code=400, detail="Status value is required")
+
+    if status_text.isdigit():
+        return int(status_text)
+
+    status_table = quote_identifier(get_status_lookup_table_name(db))
+
+    with db.cursor() as cur:
+        cur.execute(
+            f"SELECT TOP 1 {quote_identifier('status_id')} FROM dbo.{status_table} WHERE LOWER({quote_identifier('status_name')}) = LOWER(?)",
+            (status_text,),
+        )
+        status_row = cur.fetchone()
+
+    if status_row is None:
+        raise HTTPException(status_code=400, detail=f"Invalid status_name: {status_text}")
+
+    return int(status_row[0])
+
+
+@app.get("/api/status-options")
+def get_status_options(
+    token_data: dict[str, Any] = Depends(get_current_user_token),
+    db=Depends(get_db),
+):
+    _ = token_data
+    status_table = quote_identifier(get_status_lookup_table_name(db))
+
+    with db.cursor() as cur:
+        cur.execute(
+            f"SELECT {quote_identifier('status_id')}, {quote_identifier('status_name')} FROM dbo.{status_table} ORDER BY {quote_identifier('status_id')}"
+        )
+        rows = cur.fetchall()
+
+    options = [
+        {
+            "status_id": int(row[0]),
+            "status_name": str(row[1]),
+        }
+        for row in rows
+    ]
+
+    return {"options": options}
 
 
 @app.post("/api/login")
@@ -199,17 +277,13 @@ def get_table_rows(
     with db.cursor() as cur:
         safe_table_name = quote_identifier(table_name)
 
-        cur.execute(f"EXEC dbo.{safe_table_name} ?", (profile_id,))
+        if role in ("student", "professor"):
+            cur.execute(f"EXEC dbo.{safe_table_name} ?", (profile_id,))
 
 
-        # if role == "student" :
-        #     cur.execute(f"EXEC dbo.{safe_table_name} ?", (profile_id,))
-        # else:
-        #     cur.execute(f"SELECT * FROM dbo.{safe_table_name}")
 
         raw_rows = cur.fetchall()
 
-        print(f"Debug: Retrieved {len(raw_rows)} rows from {table_name}")
 
         columns = [column[0] for column in cur.description]
         rows = [dict(zip(columns, row)) for row in raw_rows]
@@ -250,10 +324,26 @@ def create_table_row(
     if not payload:
         raise HTTPException(status_code=400, detail="Request body cannot be empty")
 
-    table_columns = get_table_columns(table_name, db)
-    pk_column = get_primary_key_column(table_name, db)
+    payload = {
+        column: value
+        for column, value in payload.items()
+        if not str(column).startswith("__")
+    }
 
-    insert_columns = [column for column in payload.keys() if column != pk_column]
+    normalized_table_name = table_name.strip().lower()
+    if normalized_table_name in {"participation", "sp_participation", "sp_participations"}:
+        incoming_status_value = payload.get("status_id", payload.get("status_name"))
+        if incoming_status_value is not None:
+            payload["status_id"] = resolve_status_id(incoming_status_value, db)
+            payload.pop("status_name", None)
+
+    table_columns = get_table_columns(table_name, db)
+    pk_columns = get_primary_key_columns(table_name, db)
+
+    # For single-column PK tables, assume auto-generated id semantics.
+    auto_excluded_columns = {pk_columns[0]} if len(pk_columns) == 1 else set()
+
+    insert_columns = [column for column in payload.keys() if column not in auto_excluded_columns]
     if not insert_columns:
         raise HTTPException(status_code=400, detail="No insertable fields provided")
 
@@ -280,6 +370,50 @@ def create_table_row(
     return {"table": table_name, "row": dict(zip(columns, created_row))}
 
 
+@app.put("/api/table/Participation/{student_id}/{lesson_id}")
+def update_participation_row(
+    student_id: str,
+    lesson_id: str,
+    payload: dict[str, Any] = Body(...),
+    token_data: dict[str, Any] = Depends(get_current_user_token),
+    db=Depends(get_db),
+):
+    ensure_can_modify(token_data)
+
+    if not payload:
+        raise HTTPException(status_code=400, detail="Request body cannot be empty")
+
+    safe_table_name = quote_identifier("Participation")
+    normalized_payload = {
+        column.lower(): value
+        for column, value in payload.items()
+        if not str(column).startswith("__")
+    }
+
+    incoming_status_value = normalized_payload.get("status_id", normalized_payload.get("status_name"))
+    status_id = resolve_status_id(incoming_status_value, db)
+
+    query = (
+        f"UPDATE dbo.{safe_table_name} "
+        f"SET {quote_identifier('status_id')} = ? "
+        f"OUTPUT INSERTED.* "
+        f"WHERE {quote_identifier('student_id')} = ? AND {quote_identifier('lesson_id')} = ?"
+    )
+
+    values = [status_id, student_id, lesson_id]
+
+    with db.cursor() as cur:
+        cur.execute(query, values)
+        updated_row = cur.fetchone()
+        if updated_row is None:
+            raise HTTPException(status_code=404, detail="Row not found")
+
+        columns = [column[0] for column in cur.description]
+        db.commit()
+
+    return {"table": "Participation", "row": dict(zip(columns, updated_row))}
+
+
 @app.put("/api/table/{table_name}/{row_id}")
 def update_table_row(
     table_name: str,
@@ -290,13 +424,45 @@ def update_table_row(
 ):
     ensure_can_modify(token_data)
 
+    if table_name.strip().lower() in {"participation", "sp_participation", "sp_participations"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Use /api/table/Participation/{student_id}/{lesson_id} endpoint for updates",
+        )
+
+    print(f"Updating table {table_name}, row {row_id} with payload: {payload}")
+
     if not payload:
         raise HTTPException(status_code=400, detail="Request body cannot be empty")
 
     table_columns = get_table_columns(table_name, db)
-    pk_column = get_primary_key_column(table_name, db)
+    pk_columns = get_primary_key_columns(table_name, db)
 
-    update_columns = [column for column in payload.keys() if column != pk_column]
+    key_values: dict[str, Any] = {}
+    if len(pk_columns) == 1:
+        key_values[pk_columns[0]] = row_id
+    else:
+        for pk_column in pk_columns:
+            if pk_column in payload and payload[pk_column] is not None:
+                key_values[pk_column] = payload[pk_column]
+
+        missing_pk_columns = [pk_column for pk_column in pk_columns if pk_column not in key_values]
+        if missing_pk_columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing composite key values for: {', '.join(missing_pk_columns)}",
+            )
+
+    normalized_table_name = table_name.strip().lower()
+    if normalized_table_name in {"participation", "sp_participation", "sp_participations"}:
+        incoming_status_value = payload.get("status_id", payload.get("status_name"))
+        if incoming_status_value is None:
+            raise HTTPException(status_code=400, detail="status_id or status_name is required for Participation updates")
+
+        payload = {"status_id": resolve_status_id(incoming_status_value, db)}
+
+    update_columns = [column for column in payload.keys() if column not in set(pk_columns)]
+
     if not update_columns:
         raise HTTPException(status_code=400, detail="No updatable fields provided")
 
@@ -305,19 +471,28 @@ def update_table_row(
         raise HTTPException(status_code=400, detail=f"Invalid columns: {', '.join(invalid_columns)}")
 
     safe_table_name = quote_identifier(table_name)
-    safe_pk = quote_identifier(pk_column)
     set_clause = ", ".join(f"{quote_identifier(column)} = ?" for column in update_columns)
+    where_clause = " AND ".join(
+        f"{quote_identifier(pk_column)} = ?" for pk_column in pk_columns
+    )
+
     query = (
         f"UPDATE dbo.{safe_table_name} "
         f"SET {set_clause} "
         f"OUTPUT INSERTED.* "
-        f"WHERE {safe_pk} = ?"
+        f"WHERE {where_clause}"
     )
 
-    values = [payload[column] for column in update_columns] + [row_id]
+    values = [payload[column] for column in update_columns] + [key_values[pk_column] for pk_column in pk_columns]
 
     with db.cursor() as cur:
-        cur.execute(query, values)
+        try:
+            print(f"Executing query: {query} with values: {values}")
+            cur.execute(query, values)
+        except Exception as e:
+            print(f"Error executing query: {e}")
+            raise HTTPException(status_code=500, detail="An error occurred while updating the row")
+
         updated_row = cur.fetchone()
         if updated_row is None:
             raise HTTPException(status_code=404, detail="Row not found")
