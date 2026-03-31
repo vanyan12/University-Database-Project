@@ -107,6 +107,51 @@ def ensure_can_modify(token_data: dict[str, Any]) -> None:
         raise HTTPException(status_code=403, detail="Students are not allowed to modify data")
 
 
+def resolve_write_table_name(table_name: str, db) -> str:
+    raw_name = str(table_name or "").strip()
+    if not raw_name:
+        raise HTTPException(status_code=400, detail="Table name is required")
+
+    normalized = raw_name.lower()
+    candidates: list[str] = [raw_name]
+
+    if normalized.startswith("sp_") or normalized.startswith("my_"):
+        candidates.append(raw_name[3:])
+
+    # UI routes and SQL object names are not always singular/plural aligned.
+    additional_candidates: list[str] = []
+    for candidate in candidates:
+        trimmed = candidate.strip()
+        if not trimmed:
+            continue
+
+        if trimmed.lower().endswith("s"):
+            additional_candidates.append(trimmed[:-1])
+        else:
+            additional_candidates.append(f"{trimmed}s")
+
+    candidates.extend(additional_candidates)
+
+    seen: set[str] = set()
+    deduplicated_candidates: list[str] = []
+    for candidate in candidates:
+        candidate_text = candidate.strip()
+        if not candidate_text:
+            continue
+
+        key = candidate_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated_candidates.append(candidate_text)
+
+    for candidate in deduplicated_candidates:
+        if table_exists(candidate, db):
+            return candidate
+
+    raise HTTPException(status_code=400, detail=f"Unable to resolve writable table for '{table_name}'")
+
+
 def get_status_lookup_table_name(db) -> str:
     with db.cursor() as cur:
         cur.execute(
@@ -330,6 +375,8 @@ def create_table_row(
         if not str(column).startswith("__")
     }
 
+    target_table_name = resolve_write_table_name(table_name, db)
+
     normalized_table_name = table_name.strip().lower()
     if normalized_table_name in {"participation", "sp_participation", "sp_participations"}:
         incoming_status_value = payload.get("status_id", payload.get("status_name"))
@@ -337,21 +384,42 @@ def create_table_row(
             payload["status_id"] = resolve_status_id(incoming_status_value, db)
             payload.pop("status_name", None)
 
-    table_columns = get_table_columns(table_name, db)
-    pk_columns = get_primary_key_columns(table_name, db)
+    table_columns = get_table_columns(target_table_name, db)
+    table_columns_lookup = {column.lower(): column for column in table_columns}
 
-    # For single-column PK tables, assume auto-generated id semantics.
-    auto_excluded_columns = {pk_columns[0]} if len(pk_columns) == 1 else set()
+    try:
+        pk_columns = get_primary_key_columns(target_table_name, db)
+    except HTTPException as exc:
+        if exc.status_code == 400 and str(exc.detail) == "Table has no primary key":
+            pk_columns = []
+        else:
+            raise
 
-    insert_columns = [column for column in payload.keys() if column not in auto_excluded_columns]
+    normalized_payload: dict[str, Any] = {}
+    for column, value in payload.items():
+        resolved_column = table_columns_lookup.get(str(column).lower())
+        if resolved_column is None:
+            continue
+
+        # New rows initialized in the grid use empty strings for untouched fields.
+        if isinstance(value, str) and value.strip() == "":
+            normalized_payload[resolved_column] = None
+        else:
+            normalized_payload[resolved_column] = value
+
+    insert_columns: list[str] = []
+    single_pk_column = pk_columns[0] if len(pk_columns) == 1 else None
+    for column, value in normalized_payload.items():
+        # Keep PK value when UI provides it (e.g. Assignment.assignment_id),
+        # but skip null/empty PK so identity-like tables can auto-generate.
+        if single_pk_column is not None and column == single_pk_column and value is None:
+            continue
+        insert_columns.append(column)
+
     if not insert_columns:
         raise HTTPException(status_code=400, detail="No insertable fields provided")
 
-    invalid_columns = [column for column in insert_columns if column not in table_columns]
-    if invalid_columns:
-        raise HTTPException(status_code=400, detail=f"Invalid columns: {', '.join(invalid_columns)}")
-
-    safe_table_name = quote_identifier(table_name)
+    safe_table_name = quote_identifier(target_table_name)
     columns_clause = ", ".join(quote_identifier(column) for column in insert_columns)
     placeholders = ", ".join("?" for _ in insert_columns)
     query = (
@@ -359,7 +427,7 @@ def create_table_row(
         f"OUTPUT INSERTED.* "
         f"VALUES ({placeholders})"
     )
-    values = [payload[column] for column in insert_columns]
+    values = [normalized_payload[column] for column in insert_columns]
 
     with db.cursor() as cur:
         cur.execute(query, values)
@@ -367,7 +435,7 @@ def create_table_row(
         columns = [column[0] for column in cur.description]
         db.commit()
 
-    return {"table": table_name, "row": dict(zip(columns, created_row))}
+    return {"table": target_table_name, "row": dict(zip(columns, created_row))}
 
 
 @app.put("/api/table/Participation/{student_id}/{lesson_id}")
