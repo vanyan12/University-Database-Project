@@ -11,6 +11,7 @@ import CircularProgress from '@mui/material/CircularProgress';
 import IconButton from '@mui/material/IconButton';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
+import Skeleton from '@mui/material/Skeleton';
 import Typography from '@mui/material/Typography';
 import { DashboardLayout, ThemeSwitcher } from '@toolpad/core/DashboardLayout';
 import { ReactRouterAppProvider } from '@toolpad/core/react-router';
@@ -135,8 +136,23 @@ const formatGridDateTimeValue = (paramsOrValue) => {
 
 function GridLoadingOverlay() {
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-      <CircularProgress />
+    <Box
+      sx={{
+        alignItems: 'center',
+        backdropFilter: 'blur(2px)',
+        backgroundColor: 'rgba(255, 255, 255, 0.32)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1.5,
+        height: '100%',
+        justifyContent: 'center',
+        px: 3,
+      }}
+    >
+      <Skeleton variant="rounded" animation="wave" width="92%" height={38} />
+      <Skeleton variant="rounded" animation="wave" width="88%" height={38} />
+      <Skeleton variant="rounded" animation="wave" width="90%" height={38} />
+      <Skeleton variant="rounded" animation="wave" width="85%" height={38} />
     </Box>
   );
 }
@@ -178,6 +194,7 @@ function App() {
   const [dbRowIdField, setDbRowIdField] = useState('id');
   const [rowModesModel, setRowModesModel] = useState({});
   const [isTableLoading, setIsTableLoading] = useState(false);
+  const [isRowMutating, setIsRowMutating] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authToken, setAuthToken] = useState('');
   const [currentUserEmail, setCurrentUserEmail] = useState('');
@@ -245,8 +262,25 @@ function App() {
     return baseColumns.filter((column) => column.field);
   }, [baseColumns]);
 
-  const getRowIdentity = (row) => row?.[rowIdField] ?? row?.__rowKey ?? row?.id;
-  const getDbRowIdentity = (row) => row?.[dbRowIdField] ?? row?.id;
+  const getRowIdentity = (row) => row?.__rowKey ?? row?.[rowIdField] ?? row?.id;
+  
+  const getDbRowIdentity = (row) => {
+    // Try the detected dbRowIdField first
+    if (dbRowIdField && row?.[dbRowIdField] != null) {
+      return row[dbRowIdField];
+    }
+    
+    // Try common ID field patterns as fallbacks
+    const candidateFields = ['assignment_id', 'course_id', 'student_id', 'lesson_id', 'id'];
+    for (const field of candidateFields) {
+      if (row?.[field] != null && row[field] !== '') {
+        return row[field];
+      }
+    }
+    
+    // Last resort
+    return null;
+  };
 
   const authFetch = (url, options = {}) => {
     const headers = { ...(options.headers || {}) };
@@ -287,148 +321,233 @@ function App() {
       });
   }, [isAuthenticated, authToken]);
 
-  const handleAddClick = () => {
-    const newId = Date.now();
+  const handleAddClick = async () => {
+    const timestamp = Date.now();
+    const numericDbIds = gridRows
+      .map((row) => Number(row?.[rowIdField]))
+      .filter((value) => Number.isFinite(value));
+    const nextDbId = numericDbIds.length > 0 ? Math.max(...numericDbIds) + 1 : 1;
 
     const editableFields = gridColumns
-      .filter((column) => column?.field && column.field !== rowIdField && column.field !== 'id')
+      .filter((column) => column?.field && column.field !== 'id')
       .map((column) => column.field);
 
-    const newRow = { id: newId, isNew: true, __writeTableName: writeTableName };
+    const newRow = {
+      id: timestamp,
+      __rowKey: `new-${timestamp}`,
+      isNew: true,
+      __writeTableName: selectedTable || writeTableName,
+    };
+
+    if (rowIdField && rowIdField !== 'id' && rowIdField !== '__rowKey') {
+      newRow[rowIdField] = nextDbId;
+    }
+
     editableFields.forEach((field) => {
+      if (field === rowIdField && newRow[field] != null) {
+        return;
+      }
       newRow[field] = '';
     });
 
     setGridRows((previousRows) => [...previousRows, newRow]);
 
     const firstField = editableFields[0];
+    const rowEditId = getRowIdentity(newRow);
     setRowModesModel((previousModel) => ({
       ...previousModel,
-      [newId]: firstField
+      [rowEditId]: firstField
         ? { mode: GridRowModes.Edit, fieldToFocus: firstField }
         : { mode: GridRowModes.Edit },
     }));
   };
 
-  const processRowUpdate = async (newRow, oldRow) => {
-    if (isAssignmentsTable && !newRow.isNew) {
-      return oldRow;
+  const resolveCourseIdFromName = async (courseName) => {
+    const normalizedCourseName = String(courseName || '').trim().toLowerCase();
+    if (!normalizedCourseName) {
+      throw new Error('course_name is required to resolve course_id');
     }
 
-    const targetWriteTableName = newRow?.__writeTableName ?? oldRow?.__writeTableName ?? writeTableName;
-
-    let filteredFields = Object.entries(newRow).filter(
-      ([field]) => field !== rowIdField && field !== 'id' && field !== 'isNew' && !field.startsWith('__'),
+    const response = await authFetch(
+      `http://localhost:8000/api/course-id?course_name=${encodeURIComponent(normalizedCourseName)}`,
     );
-
-    // For Participation table, only allow status_name updates
-    const normalizedTableName = String(targetWriteTableName)
-          .replace(/^sp_/i, '')
-          .trim()
-          .toLowerCase();
-    if (normalizedTableName.includes('participation')) {
-      filteredFields = filteredFields.filter(([field]) => field.toLowerCase() === 'status_name');
+    if (!response.ok) {
+      throw new Error(`Unable to resolve course_id (status ${response.status})`);
     }
 
-    const payload = Object.fromEntries(filteredFields);
+    const data = await response.json();
+    if (data?.course_id == null || data?.course_id === '') {
+      throw new Error(`Unable to resolve course_id for course_name: ${courseName}`);
+    }
 
-    if (normalizedTableName.includes('participation')) {
-      const lessonId = newRow?.lesson_id ?? oldRow?.lesson_id;
-      const studentId = newRow?.student_id ?? oldRow?.student_id;
+    return data.course_id;
+  };
 
-      if (lessonId == null || studentId == null) {
-        throw new Error('Participation update requires lesson_id and student_id');
+  const processRowUpdate = async (newRow, oldRow) => {
+    setIsRowMutating(true);
+    try {
+      const targetWriteTableName = newRow?.__writeTableName ?? oldRow?.__writeTableName ?? selectedTable ?? writeTableName;
+
+      const fieldsToExclude = new Set(['id', 'isNew']);
+      if (!newRow.isNew) {
+        fieldsToExclude.add(rowIdField);
+        fieldsToExclude.add(dbRowIdField);
       }
 
-      payload.lesson_id = lessonId;
-      payload.student_id = studentId;
-    }
+      let filteredFields = Object.entries(newRow).filter(([field, value]) => {
+        if (fieldsToExclude.has(field) || field.startsWith('__')) {
+          return false;
+        }
 
-    const rowIdentity = getRowIdentity(newRow);
-    const dbRowIdentity = getDbRowIdentity(newRow);
+        if (newRow.isNew) {
+          return true;
+        }
 
-    if (newRow.isNew) {
-      const response = await authFetch(
-        `http://localhost:8000/api/table/${encodeURIComponent(targetWriteTableName)}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        },
-      );
+        const previousValue = oldRow?.[field];
+        return String(previousValue ?? '') !== String(value ?? '');
+      });
+
+      // For Participation table, only allow status_name updates
+      const normalizedTableName = String(targetWriteTableName)
+            .replace(/^sp_/i, '')
+            .trim()
+            .toLowerCase();
+      if (normalizedTableName.includes('participation')) {
+        filteredFields = filteredFields.filter(([field]) => field.toLowerCase() === 'status_name');
+      }
+
+      const payload = Object.fromEntries(filteredFields);
+
+      if (newRow.isNew && normalizedTableName.includes('assignment')) {
+        const hasCourseId = payload.course_id != null && String(payload.course_id).trim() !== '';
+        const hasCourseName = typeof payload.course_name === 'string' && payload.course_name.trim().length > 0;
+
+        if (!hasCourseId && hasCourseName) {
+          payload.course_id = await resolveCourseIdFromName(payload.course_name);
+        }
+
+        if (payload.course_id != null && String(payload.course_id).trim() !== '') {
+          delete payload.course_name;
+        }
+      }
+
+      if (!newRow.isNew && normalizedTableName.includes('assignment')) {
+        const hasCourseName = typeof payload.course_name === 'string' && payload.course_name.trim().length > 0;
+        const hasCourseId = payload.course_id != null && String(payload.course_id).trim() !== '';
+
+        if (!hasCourseId && hasCourseName) {
+          payload.course_id = await resolveCourseIdFromName(payload.course_name);
+        }
+
+        if ('course_name' in payload) {
+          delete payload.course_name;
+        }
+      }
+
+      if (!newRow.isNew && Object.keys(payload).length === 0) {
+        return oldRow;
+      }
+
+      if (normalizedTableName.includes('participation')) {
+        const lessonId = newRow?.lesson_id ?? oldRow?.lesson_id;
+        const studentId = newRow?.student_id ?? oldRow?.student_id;
+
+        if (lessonId == null || studentId == null) {
+          throw new Error('Participation update requires lesson_id and student_id');
+        }
+
+        payload.lesson_id = lessonId;
+        payload.student_id = studentId;
+      }
+
+      const rowIdentity = newRow.isNew ? getRowIdentity(newRow) : getRowIdentity(oldRow);
+      const dbRowIdentity = newRow.isNew ? getDbRowIdentity(newRow) : getDbRowIdentity(oldRow);
+
+      if (newRow.isNew) {
+        const response = await authFetch(
+          `http://localhost:8000/api/table/${encodeURIComponent(targetWriteTableName)}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          },
+        );
+
+        if (!response.ok) {
+          throw new Error(`Create failed with status ${response.status}`);
+        }
+
+        const data = await response.json();
+        const updatedRow = { ...data.row, isNew: false };
+
+        setGridRows((previousRows) =>
+          previousRows.map((row) => (getRowIdentity(row) === rowIdentity ? updatedRow : row)),
+        );
+
+        return updatedRow;
+      }
+
+      let response;
+
+      if (normalizedTableName.includes('participation')) {
+        const lessonId = newRow?.lesson_id ?? oldRow?.lesson_id;
+        const studentId = newRow?.student_id ?? oldRow?.student_id;
+
+        if (lessonId == null || studentId == null) {
+          throw new Error('Participation update requires lesson_id and student_id');
+        }
+
+        response = await authFetch(
+          `http://localhost:8000/api/table/Participation/${encodeURIComponent(studentId)}/${encodeURIComponent(lessonId)}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          },
+        );
+      } else {
+        if (dbRowIdentity == null || dbRowIdentity === '') {
+          throw new Error('Missing row identifier for update request');
+        }
+
+        response = await authFetch(
+          `http://localhost:8000/api/table/${encodeURIComponent(targetWriteTableName)}/${encodeURIComponent(dbRowIdentity)}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          },
+        );
+      }
 
       if (!response.ok) {
-        throw new Error(`Create failed with status ${response.status}`);
+        throw new Error(`Update failed with status ${response.status}`);
       }
 
       const data = await response.json();
-      const updatedRow = { ...data.row, isNew: false };
+      const preservedRowIdentity = oldRow?.[rowIdField] ?? newRow?.[rowIdField];
+      const updatedRow = {
+        ...oldRow,
+        ...newRow,
+        ...(data.row || {}),
+        isNew: false,
+        __writeTableName: targetWriteTableName,
+      };
+
+      if (rowIdField === '__rowKey') {
+        updatedRow.__rowKey = oldRow?.__rowKey ?? newRow?.__rowKey;
+      } else if (preservedRowIdentity != null) {
+        updatedRow[rowIdField] = preservedRowIdentity;
+      }
 
       setGridRows((previousRows) =>
         previousRows.map((row) => (getRowIdentity(row) === rowIdentity ? updatedRow : row)),
       );
 
       return updatedRow;
+    } finally {
+      setIsRowMutating(false);
     }
-
-    let response;
-
-    if (normalizedTableName.includes('participation')) {
-      const lessonId = newRow?.lesson_id ?? oldRow?.lesson_id;
-      const studentId = newRow?.student_id ?? oldRow?.student_id;
-
-      if (lessonId == null || studentId == null) {
-        throw new Error('Participation update requires lesson_id and student_id');
-      }
-
-      response = await authFetch(
-        `http://localhost:8000/api/table/Participation/${encodeURIComponent(studentId)}/${encodeURIComponent(lessonId)}`,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        },
-      );
-    } else {
-      if (dbRowIdentity == null || dbRowIdentity === '') {
-        throw new Error('Missing row identifier for update request');
-      }
-
-      response = await authFetch(
-        `http://localhost:8000/api/table/${encodeURIComponent(targetWriteTableName)}/${encodeURIComponent(dbRowIdentity)}`,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        },
-      );
-    }
-
-    if (!response.ok) {
-      throw new Error(`Update failed with status ${response.status}`);
-    }
-
-    const data = await response.json();
-    const preservedRowIdentity = oldRow?.[rowIdField] ?? newRow?.[rowIdField];
-    const updatedRow = {
-      ...oldRow,
-      ...newRow,
-      ...(data.row || {}),
-      isNew: false,
-      __writeTableName: targetWriteTableName,
-    };
-
-    if (rowIdField === '__rowKey') {
-      updatedRow.__rowKey = oldRow?.__rowKey ?? newRow?.__rowKey;
-    } else if (preservedRowIdentity != null) {
-      updatedRow[rowIdField] = preservedRowIdentity;
-    }
-
-    setGridRows((previousRows) =>
-      previousRows.map((row) => (getRowIdentity(row) === rowIdentity ? updatedRow : row)),
-    );
-
-    return updatedRow;
   };
 
   const handleProcessRowUpdateError = (error) => {
@@ -504,7 +623,7 @@ function App() {
       return;
     }
 
-    authFetch('http://localhost:8000/api/tables')
+    authFetch('http://localhost:8000/api/sps')
       .then((response) => response.json())
       .then((data) => {
         const nav = data["tables"].map((table) => ({
@@ -538,7 +657,7 @@ function App() {
     setDbRowIdField('id');
     setRowModesModel({});
 
-    authFetch(`http://localhost:8000/api/table/${encodeURIComponent(selectedTable)}`)
+    authFetch(`http://localhost:8000/api/sp/${encodeURIComponent(selectedTable)}`)
       .then((res) => res.json())
       .then((data) => {
         const incomingRows = data.rows || [];
@@ -571,7 +690,7 @@ function App() {
         }) || '__rowKey';
 
         const rows = incomingRows.map((row, index) => {
-          const rowWithWriteTarget = { ...row, __writeTableName: writeTableName };
+          const rowWithWriteTarget = { ...row, __writeTableName: selectedTable || writeTableName };
 
           if (detectedRowIdField === '__rowKey') {
             return { ...rowWithWriteTarget, __rowKey: `${selectedTable}-${index}` };
@@ -581,12 +700,18 @@ function App() {
         });
 
         const hiddenParticipationFields = new Set(['lesson_id', 'student_id']);
+        const hiddenAssignmentFields = new Set(['assignment_id']);
 
         const columns = Object.keys(sample)
-          .filter((key) => !(isParticipationTable && hiddenParticipationFields.has(String(key).toLowerCase())))
+          .filter((key) => !(isParticipationTable && hiddenParticipationFields.has(String(key).toLowerCase()))
+                        && !(isAssignmentsTable && hiddenAssignmentFields.has(String(key).toLowerCase())))
           .map((key) => {
             const normalizedFieldKey = String(key).replaceAll('_', '').toLowerCase();
             const isStatusNameField = normalizedFieldKey === 'statusname';
+            const isIdentifierField = key === detectedRowIdField || key === detectedDbRowIdField || key === 'id';
+            const showHoverEditForCell =
+              (isAssignmentsTable && canModifyRows && !isIdentifierField)
+              || (canEditRowsForSelectedTable && isStatusNameField);
 
             return {
               field: key,
@@ -643,7 +768,7 @@ function App() {
                 )
                 : undefined,
               valueFormatter: (paramsOrValue) => formatGridDateTimeValue(paramsOrValue),
-              renderCell: canEditRowsForSelectedTable && isStatusNameField
+              renderCell: showHoverEditForCell
                 ? (params) => (
                 <Box
                   sx={{
@@ -653,7 +778,7 @@ function App() {
                     position: 'relative',
                     pr: 4,
                     width: '100%',
-                    '&:hover .status-edit-trigger': {
+                    '&:hover .cell-edit-trigger': {
                       opacity: 1,
                     },
                   }}
@@ -665,9 +790,9 @@ function App() {
                     {params.value ?? ''}
                   </Box>
                   <IconButton
-                    className="status-edit-trigger"
+                    className="cell-edit-trigger"
                     size="small"
-                    aria-label="Edit status"
+                    aria-label="Edit row"
                     onClick={(event) => {
                       event.stopPropagation();
                       setRowModesModel((previousModel) => ({
@@ -839,17 +964,19 @@ function App() {
               key={selectedTable}
               rows={gridRows}
               columns={gridColumns}
-              getRowId={(row) => row?.[rowIdField] ?? row?.__rowKey ?? row?.id}
-              loading={isTableLoading}
+              getRowId={(row) => row?.__rowKey ?? row?.[rowIdField] ?? row?.id}
+              loading={isTableLoading || isRowMutating}
               isCellEditable={(params) => {
                 if (!canModifyRows) {
                   return false;
                 }
 
                 if (isAssignmentsTable) {
-                  return Boolean(params.row?.isNew)
-                    && params.field !== rowIdField
+                  return canModifyRows
+                    && !isRowMutating
                     && params.field !== 'id'
+                    && params.field !== rowIdField
+                    && params.field !== dbRowIdField
                     && params.field !== 'actions';
                 }
 

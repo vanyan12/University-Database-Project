@@ -30,7 +30,7 @@ PROFESSOR_ALLOWED = {
     'sp_Courses',
     'sp_Assignments',
     'sp_Participation',
-    'sp_Exams'
+    'sp_Exams',
 }
 
 JWT_SECRET_KEY = "PeaceWasNeverAnOption"
@@ -230,6 +230,37 @@ def get_status_options(
     return {"options": options}
 
 
+@app.get("/api/course-id")
+def get_course_id_by_name(
+    course_name: str,
+    token_data: dict[str, Any] = Depends(get_current_user_token),
+    db=Depends(get_db),
+):
+    _ = token_data
+    normalized_course_name = str(course_name or "").strip()
+    if not normalized_course_name:
+        raise HTTPException(status_code=400, detail="course_name is required")
+
+    table_name = resolve_write_table_name("Courses", db)
+    safe_table_name = quote_identifier(table_name)
+
+    with db.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT TOP 1 {quote_identifier('course_id')}
+            FROM dbo.{safe_table_name}
+            WHERE LOWER({quote_identifier('course_name')}) = LOWER(?)
+            """,
+            (normalized_course_name,),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Course not found: {normalized_course_name}")
+
+    return {"course_id": int(row[0])}
+
+
 @app.post("/api/login")
 def login(payload: LoginRequest, db=Depends(get_db)):
     email = payload.email.strip().lower()
@@ -281,7 +312,7 @@ def login(payload: LoginRequest, db=Depends(get_db)):
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     }
 
-@app.get("/api/tables")
+@app.get("/api/sps")
 def list_tables(token_data: dict[str, Any] = Depends(get_current_user_token), db=Depends(get_db)):
     role = token_data.get("role")
     allowed_routines = sorted(STUDENT_ALLOWED if role == "student" else PROFESSOR_ALLOWED)
@@ -307,6 +338,30 @@ def list_tables(token_data: dict[str, Any] = Depends(get_current_user_token), db
 
 
 @app.get("/api/table/{table_name}")
+def get_table_info(
+    table_name: str,
+    token_data: dict[str, Any] = Depends(get_current_user_token),
+    db=Depends(get_db),
+):
+    if token_data["role"] == "student" and table_name not in STUDENT_ALLOWED:
+        raise HTTPException(status_code=403, detail="Students are not allowed to access this table")
+
+    if token_data["role"] == "professor" and table_name not in (set(PROFESSOR_ALLOWED) | {"Courses"}):
+        raise HTTPException(status_code=403, detail="Professors are not allowed to access this table")
+
+    with db.cursor() as cur:
+            safe_table_name = quote_identifier(table_name)
+            cur.execute(
+                f"""
+                SELECT *
+                FROM dbo.{safe_table_name}
+                """
+            )
+
+    columns = get_table_columns(table_name, db)
+    return {"table": table_name, "columns": columns}
+
+@app.get("/api/sp/{table_name}")
 def get_table_rows(
     table_name: str,
     token_data: dict[str, Any] = Depends(get_current_user_token),
@@ -343,9 +398,10 @@ def delete_table_row(
     db=Depends(get_db),
 ):
     ensure_can_modify(token_data)
-    pk_column = get_primary_key_column(table_name, db)
+    target_table_name = resolve_write_table_name(table_name, db)
+    pk_column = get_primary_key_column(target_table_name, db)
 
-    safe_table_name = quote_identifier(table_name)
+    safe_table_name = quote_identifier(target_table_name)
     safe_pk = quote_identifier(pk_column)
     query = f"DELETE FROM dbo.{safe_table_name} WHERE {safe_pk} = ?"
 
@@ -503,8 +559,9 @@ def update_table_row(
     if not payload:
         raise HTTPException(status_code=400, detail="Request body cannot be empty")
 
-    table_columns = get_table_columns(table_name, db)
-    pk_columns = get_primary_key_columns(table_name, db)
+    target_table_name = resolve_write_table_name(table_name, db)
+    table_columns = get_table_columns(target_table_name, db)
+    pk_columns = get_primary_key_columns(target_table_name, db)
 
     key_values: dict[str, Any] = {}
     if len(pk_columns) == 1:
@@ -538,7 +595,7 @@ def update_table_row(
     if invalid_columns:
         raise HTTPException(status_code=400, detail=f"Invalid columns: {', '.join(invalid_columns)}")
 
-    safe_table_name = quote_identifier(table_name)
+    safe_table_name = quote_identifier(target_table_name)
     set_clause = ", ".join(f"{quote_identifier(column)} = ?" for column in update_columns)
     where_clause = " AND ".join(
         f"{quote_identifier(pk_column)} = ?" for pk_column in pk_columns
@@ -568,4 +625,4 @@ def update_table_row(
         columns = [column[0] for column in cur.description]
         db.commit()
 
-    return {"table": table_name, "row": dict(zip(columns, updated_row))}
+    return {"table": target_table_name, "row": dict(zip(columns, updated_row))}

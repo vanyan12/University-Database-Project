@@ -93,10 +93,7 @@ export default function SignInCard({ onSignIn }) {
         variant="h4"
         sx={{ width: '100%', fontSize: 'clamp(2rem, 10vw, 2.15rem)' }}
       >
-        University Database
-      </Typography>
-      <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-        Sign in to open the records dashboard.
+        Sign In
       </Typography>
       <Box
         component="form"
