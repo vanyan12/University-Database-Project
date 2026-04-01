@@ -200,8 +200,7 @@ function App() {
   const [currentUserEmail, setCurrentUserEmail] = useState('');
   const [currentRole, setCurrentRole] = useState('');
   const [statusOptions, setStatusOptions] = useState(DEFAULT_STATUS_OPTIONS);
-  const canModifyRows = ['prof', 'professor', 'admin'].includes((currentRole || '').toLowerCase());
-
+  const canModifyRows = ['prof', 'professor'].includes((currentRole || '').toLowerCase());
 
   const selectedTable = useMemo(() => {
     const [firstSegment = ''] = location.pathname.split('/').filter(Boolean);
@@ -456,8 +455,8 @@ function App() {
           throw new Error('Participation update requires lesson_id and student_id');
         }
 
-        payload.lesson_id = lessonId;
-        payload.student_id = studentId;
+        if (lessonId != null) payload.lesson_id = lessonId;
+        if (studentId != null) payload.student_id = studentId;
       }
 
       const rowIdentity = newRow.isNew ? getRowIdentity(newRow) : getRowIdentity(oldRow);
@@ -552,6 +551,7 @@ function App() {
 
   const handleProcessRowUpdateError = (error) => {
     console.error('Error updating row:', error);
+    alert(`Error updating row: ${error.message || error}`);
   };
 
   const handleRowModesModelChange = (newRowModesModel) => {
@@ -623,8 +623,15 @@ function App() {
       return;
     }
 
-    authFetch('http://localhost:8000/api/sps')
-      .then((response) => response.json())
+    const endpoint = 'http://localhost:8000/api/sps';
+
+    authFetch(endpoint)
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Failed to fetch table list: ${response.status} - ${response.statusText}`);
+        }
+        return response.json();
+      })
       .then((data) => {
         const nav = data["tables"].map((table) => ({
           segment: table,
@@ -633,9 +640,10 @@ function App() {
         setNavigation(nav);
       })
       .catch((error) => {
-        console.error('Error fetching data:', error);
+        console.error('Error fetching table list:', error);
+        alert(`Error loading tables: ${error.message}`);
       });
-  }, [isAuthenticated, authToken]);
+  }, [isAuthenticated, authToken, currentRole]);
 
   useEffect(() => {
     if (!isAuthenticated || selectedTable || navigation.length === 0) {
@@ -657,8 +665,15 @@ function App() {
     setDbRowIdField('id');
     setRowModesModel({});
 
-    authFetch(`http://localhost:8000/api/sp/${encodeURIComponent(selectedTable)}`)
-      .then((res) => res.json())
+    const endpoint = `http://localhost:8000/api/sp/${encodeURIComponent(selectedTable)}`;
+
+    authFetch(endpoint)
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(`Failed to load table: ${res.status} ${res.statusText}`);
+        }
+        return res.json();
+      })
       .then((data) => {
         const incomingRows = data.rows || [];
         const sample = incomingRows[0] || {};
@@ -822,7 +837,10 @@ function App() {
         setRowIdField(detectedRowIdField);
         setDbRowIdField(detectedDbRowIdField);
       })
-      .catch((err) => console.error('Error fetching table data:', err))
+      .catch((err) => {
+        console.error('Error fetching table data:', err);
+        alert(`Error loading table ${selectedTable}: ${err.message}`);
+      })
       .finally(() => setIsTableLoading(false));
   }, [isAuthenticated, authToken, selectedTable, canAddRowsForSelectedTable, canEditRowsForSelectedTable, isParticipationTable, statusOptions, writeTableName]);
 

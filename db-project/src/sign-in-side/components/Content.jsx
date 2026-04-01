@@ -22,7 +22,7 @@ const items = [
   },
   {
     icon: <AutoFixHighRoundedIcon sx={{ color: 'text.secondary' }} />,
-    title: 'Practical admin workflow',
+    title: 'Practical academic workflow',
   },
 ];
 

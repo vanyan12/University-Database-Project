@@ -90,13 +90,16 @@ def get_current_user_token(
     role = payload.get("role")
     user_id = payload.get("sub")
 
-    if user_id is None or profile_id is None or role is None:
+    if user_id is None or role is None:
         raise HTTPException(status_code=401, detail="Token payload is incomplete")
 
-    try:
-        payload["profile_id"] = int(profile_id)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=401, detail="Token profile_id is invalid")
+    if profile_id is not None:
+        try:
+            payload["profile_id"] = int(profile_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=401, detail="Token profile_id is invalid")
+    else:
+        payload["profile_id"] = None
 
     payload["role"] = str(role).strip().lower()
     return payload
@@ -312,6 +315,30 @@ def login(payload: LoginRequest, db=Depends(get_db)):
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     }
 
+
+@app.get("/api/tables")
+def list_all_tables(token_data: dict[str, Any] = Depends(get_current_user_token), db=Depends(get_db)):
+    role = token_data.get("role")
+    allowed_routines = sorted(STUDENT_ALLOWED if role == "student" else PROFESSOR_ALLOWED)
+    placeholders = ", ".join("?" for _ in allowed_routines)
+
+    with db.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT ROUTINE_NAME AS table_name
+            FROM INFORMATION_SCHEMA.ROUTINES
+            WHERE ROUTINE_SCHEMA = 'dbo'
+            AND ROUTINE_TYPE = 'PROCEDURE'
+            AND ROUTINE_NAME IN ({placeholders})
+            ORDER BY ROUTINE_NAME;
+            """,
+            tuple(allowed_routines),
+        )
+        tables = [row[0] for row in cur.fetchall()]
+
+    return {"tables": tables}
+
+
 @app.get("/api/sps")
 def list_tables(token_data: dict[str, Any] = Depends(get_current_user_token), db=Depends(get_db)):
     role = token_data.get("role")
@@ -343,23 +370,27 @@ def get_table_info(
     token_data: dict[str, Any] = Depends(get_current_user_token),
     db=Depends(get_db),
 ):
-    if token_data["role"] == "student" and table_name not in STUDENT_ALLOWED:
+    role = token_data.get("role", "").lower()
+    
+    if role == "student" and table_name not in STUDENT_ALLOWED:
         raise HTTPException(status_code=403, detail="Students are not allowed to access this table")
 
-    if token_data["role"] == "professor" and table_name not in (set(PROFESSOR_ALLOWED) | {"Courses"}):
+    if role == "professor" and table_name not in (set(PROFESSOR_ALLOWED) | {"Courses"}):
         raise HTTPException(status_code=403, detail="Professors are not allowed to access this table")
 
+    if role not in ("student", "professor"):
+        raise HTTPException(status_code=403, detail="User role is not recognized")
+
     with db.cursor() as cur:
-            safe_table_name = quote_identifier(table_name)
-            cur.execute(
-                f"""
-                SELECT *
-                FROM dbo.{safe_table_name}
-                """
-            )
+        safe_table_name = quote_identifier(table_name)
+        cur.execute(f"EXEC dbo.{safe_table_name} ?", (token_data.get("profile_id"),))
+        
+        raw_rows = cur.fetchall()
+        columns_list = [column[0] for column in cur.description]
+        rows = [dict(zip(columns_list, row)) for row in raw_rows]
 
     columns = get_table_columns(table_name, db)
-    return {"table": table_name, "columns": columns}
+    return {"table": table_name, "columns": columns, "rows": rows}
 
 @app.get("/api/sp/{table_name}")
 def get_table_rows(
@@ -554,8 +585,6 @@ def update_table_row(
             detail="Use /api/table/Participation/{student_id}/{lesson_id} endpoint for updates",
         )
 
-    print(f"Updating table {table_name}, row {row_id} with payload: {payload}")
-
     if not payload:
         raise HTTPException(status_code=400, detail="Request body cannot be empty")
 
@@ -612,10 +641,8 @@ def update_table_row(
 
     with db.cursor() as cur:
         try:
-            print(f"Executing query: {query} with values: {values}")
             cur.execute(query, values)
         except Exception as e:
-            print(f"Error executing query: {e}")
             raise HTTPException(status_code=500, detail="An error occurred while updating the row")
 
         updated_row = cur.fetchone()
