@@ -1,4 +1,3 @@
-import os
 import re
 import base64
 import binascii
@@ -62,43 +61,6 @@ def table_exists(table_name: str, db) -> bool:
         )
         return cur.fetchone() is not None
 
-
-def get_user_permissions(role_id: int, user_id: int, db) -> list[str]:
-    permissions: set[str] = set()
-
-    has_permissions = table_exists("permissions", db)
-    has_role_permissions = table_exists("role_permissions", db)
-    has_user_permissions = table_exists("user_permissions", db)
-
-    if not has_permissions:
-        return []
-
-    with db.cursor() as cur:
-        if has_role_permissions:
-            cur.execute(
-                """
-                SELECT p.permission_name
-                FROM dbo.role_permissions rp
-                JOIN dbo.permissions p ON p.permission_id = rp.permission_id
-                WHERE rp.role_id = ?
-                """,
-                (role_id,),
-            )
-            permissions.update(row[0] for row in cur.fetchall())
-
-        if has_user_permissions:
-            cur.execute(
-                """
-                SELECT p.permission_name
-                FROM dbo.user_permissions up
-                JOIN dbo.permissions p ON p.permission_id = up.permission_id
-                WHERE up.user_id = ?
-                """,
-                (user_id,),
-            )
-            permissions.update(row[0] for row in cur.fetchall())
-
-    return sorted(permissions)
 
 # Utility functions for dynamic table access with safety checks
 def quote_identifier(identifier: str) -> str:

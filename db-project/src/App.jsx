@@ -8,6 +8,11 @@ import {
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogContentText from '@mui/material/DialogContentText';
+import DialogTitle from '@mui/material/DialogTitle';
 import IconButton from '@mui/material/IconButton';
 import MenuItem from '@mui/material/MenuItem';
 import Select from '@mui/material/Select';
@@ -19,6 +24,7 @@ import { PageContainer } from '@toolpad/core/PageContainer';
 import { Account } from '@toolpad/core/Account';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
+import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
 import { createTheme } from '@mui/material/styles';
 import SchoolIcon from '@mui/icons-material/School';
 import SignInSide from './sign-in-side/SignInSide.jsx';
@@ -200,6 +206,8 @@ function App() {
   const [currentUserEmail, setCurrentUserEmail] = useState('');
   const [currentRole, setCurrentRole] = useState('');
   const [statusOptions, setStatusOptions] = useState(DEFAULT_STATUS_OPTIONS);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [rowToDelete, setRowToDelete] = useState(null);
   const canModifyRows = ['prof', 'professor'].includes((currentRole || '').toLowerCase());
 
   const selectedTable = useMemo(() => {
@@ -253,13 +261,46 @@ function App() {
     return (writeTableName || '').toLowerCase() === 'participation';
   }, [writeTableName]);
 
+  const canDeleteAssignmentRows = canModifyRows && isAssignmentsTable;
+
   const canAddRowsForSelectedTable = canModifyRows && isAssignmentsTable;
 
   const canEditRowsForSelectedTable = canModifyRows && canShowTableActions;
 
   const gridColumns = useMemo(() => {
-    return baseColumns.filter((column) => column.field);
-  }, [baseColumns]);
+    const visibleColumns = baseColumns.filter((column) => column.field);
+
+    if (!canDeleteAssignmentRows) {
+      return visibleColumns;
+    }
+
+    return [
+      ...visibleColumns,
+      {
+        field: 'actions',
+        headerName: 'Actions',
+        width: 96,
+        sortable: false,
+        filterable: false,
+        disableColumnMenu: true,
+        align: 'center',
+        headerAlign: 'center',
+        renderCell: (params) => (
+          <IconButton
+            aria-label="Delete assignment row"
+            color="error"
+            onClick={(event) => {
+              event.stopPropagation();
+              handleRequestDeleteRow(params.row);
+            }}
+            size="small"
+          >
+            <DeleteOutlinedIcon fontSize="small" />
+          </IconButton>
+        ),
+      },
+    ];
+  }, [baseColumns, canDeleteAssignmentRows]);
 
   const getRowIdentity = (row) => row?.__rowKey ?? row?.[rowIdField] ?? row?.id;
   
@@ -554,6 +595,62 @@ function App() {
     alert(`Error updating row: ${error.message || error}`);
   };
 
+  const handleRequestDeleteRow = (row) => {
+    setRowToDelete(row);
+    setDeleteDialogOpen(true);
+  };
+
+  const resetDeleteDialog = () => {
+    setDeleteDialogOpen(false);
+    setRowToDelete(null);
+  };
+
+  const handleCloseDeleteDialog = () => {
+    if (isRowMutating) {
+      return;
+    }
+
+    resetDeleteDialog();
+  };
+
+  const handleConfirmDeleteRow = async () => {
+    if (!rowToDelete) {
+      return;
+    }
+
+    const targetWriteTableName = rowToDelete?.__writeTableName ?? selectedTable ?? writeTableName;
+    const dbRowIdentity = getDbRowIdentity(rowToDelete);
+    const rowIdentity = getRowIdentity(rowToDelete);
+
+    if (rowToDelete.isNew || dbRowIdentity == null || dbRowIdentity === '') {
+      setGridRows((previousRows) => previousRows.filter((row) => getRowIdentity(row) !== rowIdentity));
+      resetDeleteDialog();
+      return;
+    }
+
+    setIsRowMutating(true);
+    try {
+      const response = await authFetch(
+        `http://localhost:8000/api/table/${encodeURIComponent(targetWriteTableName)}/${encodeURIComponent(dbRowIdentity)}`,
+        {
+          method: 'DELETE',
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`Delete failed with status ${response.status}`);
+      }
+
+      setGridRows((previousRows) => previousRows.filter((row) => getRowIdentity(row) !== rowIdentity));
+      resetDeleteDialog();
+    } catch (error) {
+      console.error('Error deleting row:', error);
+      alert(`Error deleting row: ${error.message || error}`);
+    } finally {
+      setIsRowMutating(false);
+    }
+  };
+
   const handleRowModesModelChange = (newRowModesModel) => {
     setRowModesModel(newRowModesModel);
   };
@@ -623,7 +720,7 @@ function App() {
       return;
     }
 
-    const endpoint = 'http://localhost:8000/api/sps';
+    const endpoint = 'http://localhost:8000/api/tables';
 
     authFetch(endpoint)
       .then((response) => {
@@ -1076,6 +1173,28 @@ function App() {
           )}
         </PageContainer>
       </DashboardLayout>
+      <Dialog
+        open={deleteDialogOpen}
+        onClose={handleCloseDeleteDialog}
+        aria-labelledby="delete-assignment-dialog-title"
+        aria-describedby="delete-assignment-dialog-description"
+      >
+        <DialogTitle id="delete-assignment-dialog-title">Delete assignment row?</DialogTitle>
+        <DialogContent>
+          <DialogContentText id="delete-assignment-dialog-description">
+            This will permanently remove the selected assignment row from the database.
+            {rowToDelete ? ' Confirm to continue.' : ''}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseDeleteDialog} disabled={isRowMutating}>
+            Cancel
+          </Button>
+          <Button onClick={handleConfirmDeleteRow} color="error" variant="contained" disabled={isRowMutating}>
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
     </ReactRouterAppProvider>
 
   )

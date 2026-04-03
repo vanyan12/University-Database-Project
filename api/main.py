@@ -1,9 +1,7 @@
 
 from datetime import datetime, timedelta, timezone
-import os
 from typing import Any
 from utils import *
-
 from fastapi import Body, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -335,31 +333,6 @@ def list_all_tables(token_data: dict[str, Any] = Depends(get_current_user_token)
             tuple(allowed_routines),
         )
         tables = [row[0] for row in cur.fetchall()]
-
-    return {"tables": tables}
-
-
-@app.get("/api/sps")
-def list_tables(token_data: dict[str, Any] = Depends(get_current_user_token), db=Depends(get_db)):
-    role = token_data.get("role")
-    allowed_routines = sorted(STUDENT_ALLOWED if role == "student" else PROFESSOR_ALLOWED)
-    placeholders = ", ".join("?" for _ in allowed_routines)
-
-    with db.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT ROUTINE_NAME AS table_name
-            FROM INFORMATION_SCHEMA.ROUTINES
-            WHERE ROUTINE_SCHEMA = 'dbo'
-            AND ROUTINE_TYPE = 'PROCEDURE'
-            AND ROUTINE_NAME IN ({placeholders})
-            ORDER BY ROUTINE_NAME;
-            """,
-            tuple(allowed_routines),
-        )
-
-        tables = [row[0] for row in cur.fetchall()]
-
 
     return {"tables": tables}
 
