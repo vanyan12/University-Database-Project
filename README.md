@@ -1,3 +1,7 @@
+
+
+
+
 <div align="center">
 
 # 🎓 University Database
@@ -8,6 +12,8 @@
 [![SQL Server](https://img.shields.io/badge/SQL%20Server-2019%2B-CC2927?style=for-the-badge&logo=microsoftsqlserver&logoColor=white)](https://www.microsoft.com/en-us/sql-server)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
+
+<img width="1919" height="859" alt="Screenshot 2026-04-05 011255" src="https://github.com/user-attachments/assets/8a31dde0-d67c-40ac-b3d6-e2b5ba30c9e8" />
 
 A full-stack university management system featuring a **FastAPI** REST backend, a **React/Vite** dashboard, and a rich **SQL Server** database with stored procedures, triggers, and views.
 
