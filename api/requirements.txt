@@ -1,6 +1,8 @@
 fastapi
 uvicorn
 pydantic
+email-validator
+python-dotenv
 pyodbc
 python-jose[cryptography]
 passlib[bcrypt]

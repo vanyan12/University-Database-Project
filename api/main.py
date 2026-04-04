@@ -1,4 +1,6 @@
 
+import os
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from utils import *
@@ -7,7 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr
+from dotenv import load_dotenv
 import pyodbc
+
+
+load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 
 
 class LoginRequest(BaseModel):
@@ -31,9 +37,26 @@ PROFESSOR_ALLOWED = {
     'sp_Exams',
 }
 
-JWT_SECRET_KEY = "PeaceWasNeverAnOption"
 JWT_ALGORITHM = "HS512"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not JWT_SECRET_KEY:
+    raise RuntimeError("JWT_SECRET_KEY is not configured")
+
+DB_SERVER = os.getenv("DB_SERVER", r"localhost\SQLSERVER")
+DB_NAME = os.getenv("DB_NAME", "uni")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_DRIVER = os.getenv("DB_DRIVER", "ODBC Driver 18 for SQL Server")
+DB_ENCRYPT = os.getenv("DB_ENCRYPT", "yes")
+DB_TRUST_SERVER_CERTIFICATE = os.getenv("DB_TRUST_SERVER_CERTIFICATE", "yes")
+
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+    if origin.strip()
+]
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -42,7 +65,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -50,14 +73,17 @@ app.add_middleware(
 
 
 def get_db():
+    if not DB_USER or not DB_PASSWORD:
+        raise RuntimeError("DB_USER and DB_PASSWORD must be configured")
+
     conn = pyodbc.connect(
-        "DRIVER={ODBC Driver 18 for SQL Server};"
-        "SERVER=localhost\\SQLSERVER;"
-        "DATABASE=uni;"
-        "UID=sa;"
-        "PWD=123123123;"
-        "Encrypt=yes;"
-        "TrustServerCertificate=yes;"
+        f"DRIVER={{{DB_DRIVER}}};"
+        f"SERVER={DB_SERVER};"
+        f"DATABASE={DB_NAME};"
+        f"UID={DB_USER};"
+        f"PWD={DB_PASSWORD};"
+        f"Encrypt={DB_ENCRYPT};"
+        f"TrustServerCertificate={DB_TRUST_SERVER_CERTIFICATE};"
     )
     try:
         yield conn # After returning the connection, it executes also finally block to close the connection when done
