@@ -19,5 +19,8 @@ GO
 :r ./15_participation.sql
 :r ./16_student_discounts.sql
 :r ./17_student_assignmnets.sql
+:r ./views.sql
+:r ./procedures.sql
+:r ./triggers.sql
 :r ./DCL.sql
 GO

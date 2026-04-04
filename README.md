@@ -35,7 +35,10 @@ A full-stack university database project with a FastAPI backend, a React/Vite fr
   - `16_student_discounts.sql` - inserts student discount records
   - `17_student_assignmnets.sql` - inserts student assignment records
   - `DCL.sql` - creates roles/users/logins and grants permissions
-  - `DQL.sql` - contains 25 DQL (SELECT) queries for data analysis and verification
+  - `DQL.sql` - contains 25 DQL queries for data analysis and verification
+  - `procedures.sql` - creates stored procedures used by the application
+  - `triggers.sql` - creates triggers for automated integrity and business rules
+  - `views.sql` - creates database views used by the backend and reporting queries
   - `master_script.sql` - runs the SQL scripts in order
 
 ## Requirements
@@ -66,7 +69,7 @@ Before running the script, make sure `api/.env` exists with your local settings:
 JWT_SECRET_KEY=your-secret-key
 DB_SERVER=localhost\\SQLSERVER
 DB_NAME=uni
-DB_USER=sa
+DB_USER=your-username
 DB_PASSWORD=your-password
 DB_DRIVER=ODBC Driver 18 for SQL Server
 DB_ENCRYPT=yes
