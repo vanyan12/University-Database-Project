@@ -5,8 +5,8 @@ REM ==========================================
 REM Start front-end and API in separate windows
 REM ==========================================
 
-set "ROOT_DIR=%~dp0"
-if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
+for %%I in ("%~dp0.") do set "ROOT_DIR=%%~fI"
+
 set "FRONTEND_DIR=%ROOT_DIR%\frontend"
 set "API_DIR=%ROOT_DIR%\api"
 set "VENV_PYTHON=%API_DIR%\.venv\Scripts\python.exe"
@@ -25,11 +25,14 @@ if not exist "%API_DIR%" (
 )
 
 echo Installing frontend dependencies...
-call npm --prefix "%FRONTEND_DIR%" install
-if errorlevel 1 (
+pushd "%FRONTEND_DIR%"
+call npm install
+set "NPM_EXIT=%ERRORLEVEL%"
+popd
+if not "%NPM_EXIT%"=="0" (
 	echo Failed to install frontend dependencies.
 	pause
-	exit /b 1
+	exit /b %NPM_EXIT%
 )
 
 echo Installing backend dependencies...
@@ -50,10 +53,10 @@ start "Front-end" cmd /k "cd /d ""%FRONTEND_DIR%"" && npm run dev"
 
 REM --- API: uvicorn (prefer local virtual environment python) ---
 if exist "%VENV_PYTHON%" (
-	start "API Server" cmd /k "cd /d ""%API_DIR%"" && ""%VENV_PYTHON%"" -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+	start "API Server" /D "%API_DIR%" cmd /k ""%VENV_PYTHON%" -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
 ) else (
-	start "API Server" cmd /k "cd /d ""%API_DIR%"" && py -3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+	start "API Server" /D "%API_DIR%" cmd /k "py -3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
 )
 
 echo All servers started.
-pause
+exit /b 0
