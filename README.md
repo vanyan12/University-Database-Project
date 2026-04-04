@@ -34,6 +34,7 @@ A full-stack university database project with a FastAPI backend, a React/Vite fr
   - `15_participation.sql` - inserts participation records
   - `16_student_discounts.sql` - inserts student discount records
   - `17_student_assignmnets.sql` - inserts student assignment records
+  - `DQL.sql` - contains 25 DQL (SELECT) queries for data analysis and verification
   - `master_script.sql` - runs the SQL scripts in order
 
 ## Requirements
