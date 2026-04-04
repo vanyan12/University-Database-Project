@@ -34,6 +34,7 @@ A full-stack university database project with a FastAPI backend, a React/Vite fr
   - `15_participation.sql` - inserts participation records
   - `16_student_discounts.sql` - inserts student discount records
   - `17_student_assignmnets.sql` - inserts student assignment records
+  - `DCL.sql` - creates roles/users/logins and grants permissions
   - `DQL.sql` - contains 25 DQL (SELECT) queries for data analysis and verification
   - `master_script.sql` - runs the SQL scripts in order
 
@@ -79,7 +80,7 @@ CORS_ORIGINS=http://localhost:5173
 1. Open the SQL scripts in SQL Server Management Studio or your preferred SQL client.
 2. Make sure **SQLCMD Mode** is enabled in SSMS: `Query -> SQLCMD Mode`.
 3. If SQLCMD Mode is disabled, `:r` include commands in `sql/master_script.sql` will fail with an error.
-4. Run `sql/master_script.sql` to create the database, tables, and seed data.
+4. Run `sql/master_script.sql` to create the database, tables, seed data, and apply DCL permissions.
 5. Make sure the SQL Server connection details in `api/.env` match your local instance.
 
 ## Notes
